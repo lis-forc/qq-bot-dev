@@ -1,0 +1,20 @@
+# 插件最终跑在 Linux 服务器上，统一按 LF 存，避免 CRLF 混进来
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.txt   text eol=lf
+*.sh    text eol=lf
+
+# 二进制，别做任何转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.zip   binary
+*.db    binary

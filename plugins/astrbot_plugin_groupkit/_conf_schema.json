@@ -1,0 +1,129 @@
+{
+  "enabled_group_ids": {
+    "description": "启用群号列表",
+    "type": "list",
+    "default": [],
+    "hint": "留空表示所有群生效。机器人在多个群时建议填写目标群号，避免在别的群误触发。"
+  },
+  "currency_name": {
+    "description": "额度名称",
+    "type": "string",
+    "default": "额度"
+  },
+  "welcome_quota": {
+    "description": "新人礼额度",
+    "type": "int",
+    "default": 5,
+    "slider": { "min": 0, "max": 200, "step": 1 },
+    "hint": "成员第一次发言时自动到账，只发一次。设为 0 表示不发。"
+  },
+  "rename_cost": {
+    "description": "改名消耗额度",
+    "type": "int",
+    "default": 1,
+    "slider": { "min": 0, "max": 50, "step": 1 },
+    "hint": "改名改的是信息卡上的显示名。设为 0 表示免费。"
+  },
+  "draw_per": {
+    "description": "每多少条发言获得一次抽奖机会",
+    "type": "int",
+    "default": 100,
+    "slider": { "min": 10, "max": 500, "step": 10 }
+  },
+  "draw_min": {
+    "description": "抽奖最低额度",
+    "type": "int",
+    "default": 1
+  },
+  "draw_max": {
+    "description": "抽奖最高额度",
+    "type": "int",
+    "default": 5
+  },
+  "draw_bonus_chance": {
+    "description": "抽奖暴击概率",
+    "type": "float",
+    "default": 0.1,
+    "slider": { "min": 0, "max": 1, "step": 0.01 },
+    "hint": "0 表示关闭暴击。命中时按下面的暴击额度发放。"
+  },
+  "draw_bonus_amount": {
+    "description": "暴击时发放的额度",
+    "type": "int",
+    "default": 8
+  },
+  "notify_draw_ready": {
+    "description": "攒满抽奖机会时在群里提示",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后不打扰，但仍会累计抽奖次数，用「抽奖」可查看。"
+  },
+  "count_command_messages": {
+    "description": "口令消息是否计入发言数",
+    "type": "bool",
+    "default": false
+  },
+  "log_retention_days": {
+    "description": "额度流水与操作日志保留天数",
+    "type": "int",
+    "default": 180,
+    "slider": { "min": 0, "max": 1095, "step": 30 },
+    "hint": "0 表示永久保留。每天最多自动清理一次；「累计发言」存在成员表里，不受影响。"
+  },
+  "stats_retention_days": {
+    "description": "按天发言统计保留天数",
+    "type": "int",
+    "default": 730,
+    "slider": { "min": 0, "max": 1825, "step": 30 },
+    "hint": "只影响按天明细（今日/本月需要它），累计数不受影响。0 表示永久保留。"
+  },
+  "info_triggers": {
+    "description": "个人信息卡触发词",
+    "type": "string",
+    "default": "i,我的信息,名片",
+    "hint": "英文逗号分隔。通常是单个字母，例如 i。"
+  },
+  "help_style": {
+    "description": "帮助菜单发送方式",
+    "type": "string",
+    "default": "forward",
+    "options": ["forward", "text"],
+    "labels": ["合并转发（点开查看，防刷屏）", "直接发文字"],
+    "hint": "合并转发需要协议端支持 OneBot 群合并转发。若发送失败可切换为文字。"
+  },
+  "card_bg_path": {
+    "description": "信息卡背景图路径",
+    "type": "string",
+    "default": "assets/card_bg.png",
+    "hint": "相对路径基于插件目录，也可填绝对路径。替换成自己的立绘背景即可，建议比例 1200x680。"
+  },
+  "card_font_path": {
+    "description": "信息卡字体路径",
+    "type": "string",
+    "default": "assets/fonts/LXGWWenKai-Medium.ttf",
+    "hint": "留空或文件不存在时会自动回退到系统中文字体。"
+  },
+  "card_show_qq": {
+    "description": "信息卡上显示 QQ 号",
+    "type": "bool",
+    "default": false
+  },
+  "card_show_avatar": {
+    "description": "信息卡右侧显示 QQ 头像",
+    "type": "bool",
+    "default": true,
+    "hint": "从 q1.qlogo.cn 拉 640px 头像，圆形裁切。拉取失败会自动画名字首字占位，不会空着。"
+  },
+  "owner_default_level": {
+    "description": "QQ 群主默认权限等级",
+    "type": "int",
+    "default": 4,
+    "slider": { "min": 1, "max": 4, "step": 1 }
+  },
+  "admin_default_level": {
+    "description": "QQ 管理员默认权限等级",
+    "type": "int",
+    "default": 3,
+    "slider": { "min": 1, "max": 4, "step": 1 }
+  }
+}

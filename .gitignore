@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 运行数据：数据库 / WAL / 临时产物，绝不入库
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+
+# 自测与预览产物（每次跑都会重新生成）
+plugins/*/tools/out/
+plugins/*/tools/out
+
+# 别人插件的原件：只做本地参考，不跟踪、不分发
+待改/
+参考/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
