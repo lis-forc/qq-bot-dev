@@ -3,7 +3,7 @@ display_name: 群助手
 desc: 轻量群助手。图片个人信息卡、额度与抽奖、发言统计、真实入群天数、表情包制作（对接 meme-generator）、基础群管（禁言/踢人/全群禁言/发额度/授权）。
 short_desc: 信息卡 + 额度 + 发言统计 + 表情包 + 基础群管，无需注册
 author: w2140
-version: 0.5.0
+version: 0.5.1
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.16"

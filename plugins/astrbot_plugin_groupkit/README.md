@@ -282,27 +282,46 @@ QQ 群主 → 4 级；QQ 管理员 → 3 级；普通成员 → 1 级
 
 ### 起服务
 
+两个版本都能用，插件启动时自动探测，你不需要配「我装的是哪个」。
+
+**Python 版**（模板最全）
+
 ```bash
 docker run -d \
   --name meme-generator \
-  -p 2233:2233 \
+  -p 172.17.0.1:2233:2233 \
   --restart always \
   -v /root/memeapi/memes:/data/memes \
   -e MEME_DIRS='["/data/memes"]' \
   meetwq/meme-generator:main
 ```
 
-模板库从这几个仓库拿（克隆到 `/root/memeapi/memes` 下面就行）：
+**Rust 版**（镜像小一个量级、启动快，自带两百多个模板，不用挂目录）
+
+```bash
+docker run -d \
+  --name meme-generator \
+  -p 172.17.0.1:2233:2233 \
+  --restart always \
+  meetwq/meme-generator-rs:main
+```
+
+两者的接口路径不一样，验证命令也不同：
+
+```bash
+curl http://172.17.0.1:2233/memes        # Python 版 → ["petpet", "kiss", ...]
+curl http://172.17.0.1:2233/meme/keys    # Rust 版   → 模板 key 列表
+```
+
+**拿 Python 版的命令去测 Rust 版会得到 404**，这是路径不同，不是服务坏了。
+
+模板库从这几个仓库拿（Python 版克隆到 `/root/memeapi/memes`）：
 
 - `https://github.com/MemeCrafters/meme-generator-contrib`（官方扩展）
 - `https://github.com/anyliew/meme_emoji`（表情包大户）
 - `https://github.com/LRZ9712/tudou-meme`
 
-一个模板一个目录，放进去重启容器就生效。验证服务活着：
-
-```bash
-curl http://127.0.0.1:2233/memes      # 应该返回一长串模板 key
-```
+一个模板一个目录，放进去重启容器就生效。
 
 如果 AstrBot 本身跑在容器里，`127.0.0.1` 指的是容器自己，
 要么把两个容器放同一个 network 用容器名访问，要么填宿主机内网 IP。
@@ -338,11 +357,13 @@ curl http://127.0.0.1:2233/memes      # 应该返回一长串模板 key
 
 | 现象 | 原因 |
 |---|---|
-| `连不上表情服务` | 容器没起，或 `meme_api_base_url` 填错 |
-| `一个模板都没有` | 容器没挂载 memes 目录，模板库是空的 |
+| `连不上表情服务` | 容器没起，或 `meme_api_base_url` 填错。AstrBot 在 Docker 里时别填 `127.0.0.1` |
+| `接口对不上` | 装的服务不是 meme-generator / meme-generator-rs，或者端口指到了别的东西 |
+| `一个模板都没有` | Python 版没挂载 memes 目录；Rust 版正常自带模板，出现这句说明镜像没打全 |
 | `没找到「xxx」` | 模板名不对，先发 `表情列表` 或 `搜表情` |
 | 一直超时 | 动图模板很吃 CPU，调大 `meme_timeout`，或给容器多分核 |
 | 做出来是空白图 | 模板缺素材文件，去容器日志看是哪个模板 |
+| 容器日志里一路 404 | 用 Python 版的路径（`/memes`）测了 Rust 版，正常现象 |
 
 ---
 
