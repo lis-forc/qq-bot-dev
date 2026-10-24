@@ -1,2 +1,6 @@
-# 图片个人信息卡需要
+# 图片个人信息卡需要（缺了会自动退化成文字卡，插件仍能加载）
 Pillow>=10.0.0
+
+# 表情包功能要调 meme-generator 的 HTTP 接口
+# AstrBot 跑在 aiocqhttp 上时本来就带 aiohttp，这里显式声明是防精简环境
+aiohttp>=3.8.0

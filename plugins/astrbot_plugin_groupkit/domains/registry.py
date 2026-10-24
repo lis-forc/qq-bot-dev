@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from ..core.command import Command, CommandEnv, HelpEntry, exact, require_level
-from . import admin, help as help_domain, profile, quota, stats
+from . import admin, help as help_domain, profile, quota, stats, sticker
 
 
 async def _help_handler(ctx, env: CommandEnv) -> AsyncGenerator:
@@ -38,7 +38,8 @@ def _help_command() -> Command:
 # ---------------------------------------------------------------------------
 # 匹配顺序（从上到下，先命中先用）：
 #   信息卡 → 帮助 → 改名 → 爱好 → 性别 → 额度/抽奖/今日/额度记录
-#   → 全群禁言/全群解禁 → 解禁 → 禁言 → 踢人 → 发额度/扣额度 → 授权
+#   → 表情列表/搜表情/表情详情/表情 → 全群禁言/全群解禁 → 解禁 → 禁言
+#   → 踢人 → 发额度/扣额度 → 授权
 # ---------------------------------------------------------------------------
 COMMANDS: list[Command] = [
     profile.COMMANDS[0],      # info
@@ -50,6 +51,7 @@ COMMANDS: list[Command] = [
     quota.COMMANDS[1],        # 抽奖
     stats.COMMANDS[0],        # 今日
     quota.COMMANDS[2],        # 额度记录
+    *sticker.COMMANDS,        # 表情（列表/搜索/详情 排在「表情」前缀之前）
     *admin.COMMANDS,          # 群管（内部已按「全群在前」的顺序排好）
 ]
 

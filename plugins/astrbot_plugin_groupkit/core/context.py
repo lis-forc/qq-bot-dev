@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import PluginConfig
 from .database import Database
+from .meme_api import MemeApi
 from .services import Permission, ProfileService, QuotaService, StatsService
 from ..utils.card import CardRenderer
 
@@ -27,6 +28,7 @@ class PluginContext:
     stats: StatsService
     quota: QuotaService
     cards: CardRenderer
+    meme: MemeApi
     plugin_dir: Path
     data_dir: Path
 

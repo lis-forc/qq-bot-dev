@@ -179,6 +179,9 @@ find data/plugins/astrbot_plugin_groupkit -maxdepth 2 -type f | sort
 | `抽奖` | 消耗一次机会，随机 1~5 额度（10% 暴击 +8），回你「还剩几次」 |
 | `今日` | 今日 / 本月 / 累计发言 |
 | `额度记录` | 最近 5 笔额度变动（谁加的、什么时候） |
+| `表情 摸头 @某人` | 做一张表情包，做成才扣额度 |
+| `表情列表` / `搜表情 猫` | 看有哪些模板 / 按关键词找 |
+| `表情详情 摸头` | 这个模板要几张图几段字 |
 | `帮助` | 菜单（合并转发，点开才展开） |
 
 ### 2 级 · 助手
@@ -254,9 +257,92 @@ QQ 群主 → 4 级；QQ 管理员 → 3 级；普通成员 → 1 级
 | `card_font_path` | `assets/fonts/...ttf` | 字体 |
 | `card_show_qq` | `false` | 卡上是否显示 QQ 号 |
 | `card_show_avatar` | `true` | 右侧是否显示 QQ 头像（拉不到自动用名字首字占位） |
+| `meme_api_base_url` | `http://127.0.0.1:2233` | 表情生成服务地址 |
+| `meme_cost` | `1` | 做一张表情扣多少额度，0 = 免费 |
+| `meme_timeout` | `30` | 表情生成超时秒数 |
+| `meme_max_image_mb` | `10` | 单张素材图大小上限 |
+| `meme_auto_avatar` | `true` | 图不够时自动补发送者头像 |
+| `meme_auto_texts` | `true` | 没写文字时用模板默认文字 |
 | `log_retention_days` | `180` | 流水/日志保留天数，0 = 永久 |
 | `stats_retention_days` | `730` | 按天统计保留天数，0 = 永久 |
 | `owner_default_level` / `admin_default_level` | `4` / `3` | 群角色映射出的权限 |
+
+---
+
+## 表情包
+
+### 先搞清楚谁在画图
+
+**这个插件不画图。** 画图的是 `meme-generator` —— 一个独立的服务，
+插件只负责把「谁的头像 + 什么文字」发过去，把它画好的图转回群里。
+
+这样分工的好处很实在：模板库有几百个模板、每个模板一堆素材图，
+全部塞进插件会让插件变成几百 MB；而且模板要更新的时候，
+重启一个容器就行，不用动插件代码。
+
+### 起服务
+
+```bash
+docker run -d \
+  --name meme-generator \
+  -p 2233:2233 \
+  --restart always \
+  -v /root/memeapi/memes:/data/memes \
+  -e MEME_DIRS='["/data/memes"]' \
+  meetwq/meme-generator:main
+```
+
+模板库从这几个仓库拿（克隆到 `/root/memeapi/memes` 下面就行）：
+
+- `https://github.com/MemeCrafters/meme-generator-contrib`（官方扩展）
+- `https://github.com/anyliew/meme_emoji`（表情包大户）
+- `https://github.com/LRZ9712/tudou-meme`
+
+一个模板一个目录，放进去重启容器就生效。验证服务活着：
+
+```bash
+curl http://127.0.0.1:2233/memes      # 应该返回一长串模板 key
+```
+
+如果 AstrBot 本身跑在容器里，`127.0.0.1` 指的是容器自己，
+要么把两个容器放同一个 network 用容器名访问，要么填宿主机内网 IP。
+
+### 怎么用
+
+```
+表情 摸头 @小明
+表情 亲亲 "你好" @小明
+表情 摸头                ← 不 @ 就用你自己的头像
+表情 摸头 #circle        ← 模板自定义选项，原样透传给服务端
+```
+
+素材来源按「你表达得有多明确」排序，位置也决定模板里的角色：
+
+1. 引用消息里的图
+2. 这条消息里带的图
+3. 消息里贴的图片链接
+4. 被 @ 的人的头像（按 @ 的顺序）
+5. 还不够就补你自己的头像
+
+所以「引用一张图 + 表情 摸头」和「表情 摸头 @某人」出来的效果不同 ——
+前者用的是那张图，后者用的是那个人。
+
+### 扣费
+
+**做成之后才扣。** 服务连不上、图下载失败、模板参数不对，一分不扣。
+查模板列表、看详情、搜索都不扣。
+
+同一个人 4 秒内只能做一张，这是防连点，不是防白嫖。
+
+### 排错
+
+| 现象 | 原因 |
+|---|---|
+| `连不上表情服务` | 容器没起，或 `meme_api_base_url` 填错 |
+| `一个模板都没有` | 容器没挂载 memes 目录，模板库是空的 |
+| `没找到「xxx」` | 模板名不对，先发 `表情列表` 或 `搜表情` |
+| 一直超时 | 动图模板很吃 CPU，调大 `meme_timeout`，或给容器多分核 |
+| 做出来是空白图 | 模板缺素材文件，去容器日志看是哪个模板 |
 
 ---
 
@@ -362,12 +448,14 @@ astrbot_plugin_groupkit/
 │   ├── database.py         # SQLite：members / daily_stats / quota_logs / op_logs
 │   ├── services.py         # 权限 / 资料 / 统计 / 额度，返回文本不直接发
 │   ├── context.py          # PluginContext：把上面这些打包，处理函数只接它
-│   └── command.py          # 命令表的数据结构 + 匹配器工厂
+│   ├── command.py          # 命令表的数据结构 + 匹配器工厂
+│   └── meme_api.py         # meme-generator 的三个接口（不画图，只发请求）
 ├── domains/                # 一个功能一个文件
 │   ├── registry.py         # ★ 命令清单 + 分发器（加功能就改这里）
 │   ├── profile.py          # 信息卡 / 改名 / 爱好
 │   ├── quota.py            # 额度 / 抽奖 / 额度记录
 │   ├── stats.py            # 今日发言 + 每条消息计数
+│   ├── sticker.py          # 表情包：参数语法 / 素材组装 / 扣费 / 小图发送
 │   ├── admin.py            # 禁言 / 踢人 / 全群 / 发扣额度 / 授权
 │   ├── help.py             # 帮助菜单（从 registry 生成，不手写）
 │   └── notice.py           # 入群等通知事件
@@ -375,6 +463,7 @@ astrbot_plugin_groupkit/
 │   ├── router.py           # compact / strip_at / drop_prefix / parse_duration…
 │   ├── event.py            # 读原始报文、@ 目标解析
 │   ├── onebot.py           # call_action 封装，失败只记日志不抛
+│   ├── media.py            # 取消息图 / 引用图 / QQ 头像，统一下载与限流
 │   └── card.py             # 信息卡渲染（含 emoji 过滤）
 ├── assets/                 # 背景图 + 字体
 └── tools/

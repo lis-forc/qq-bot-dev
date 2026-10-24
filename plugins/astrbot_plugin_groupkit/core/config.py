@@ -119,6 +119,42 @@ class PluginConfig:
         """
         return min(43200, max(1, _as_int(self.raw.get("default_mute_minutes"), 10)))
 
+    # ---------- 表情包 ----------
+    @property
+    def meme_api_base_url(self) -> str:
+        """meme-generator 的地址。
+
+        这个插件自己不画图，图是外面那个服务画的。地址填错的表现是
+        「做了半天没反应」，所以默认值就按容器最常用的写法给。
+        """
+        value = str(self.raw.get("meme_api_base_url") or "").strip()
+        return (value or "http://127.0.0.1:2233").rstrip("/")
+
+    @property
+    def meme_cost(self) -> int:
+        """做一张表情扣多少额度。0 = 免费。"""
+        return max(0, _as_int(self.raw.get("meme_cost"), 1))
+
+    @property
+    def meme_timeout(self) -> int:
+        """请求表情服务的超时秒数。动图模板会慢，给宽一点。"""
+        return min(300, max(5, _as_int(self.raw.get("meme_timeout"), 30)))
+
+    @property
+    def meme_max_image_mb(self) -> int:
+        """单张素材图的大小上限。群里偶尔会有人发很大的原图。"""
+        return min(50, max(1, _as_int(self.raw.get("meme_max_image_mb"), 10)))
+
+    @property
+    def meme_auto_avatar(self) -> bool:
+        """图不够时自动补发送者头像。关掉就得自己 @ 或发图。"""
+        return bool(self.raw.get("meme_auto_avatar", True))
+
+    @property
+    def meme_auto_texts(self) -> bool:
+        """没写文字时用模板自带的默认文字。"""
+        return bool(self.raw.get("meme_auto_texts", True))
+
     # ---------- 交互 ----------
     @property
     def info_triggers(self) -> set[str]:

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import importlib.util
 import sys
@@ -869,6 +870,261 @@ def main() -> None:
     refreshed = asyncio.run(_refresh())
     check("手动性别不被协议端覆盖", refreshed.get("sex") == "女", str(refreshed))
     check("入群时间仍然同步进来", refreshed.get("join_time") == 1_700_000_000, str(refreshed))
+
+    print("\n=== 4.12 表情包：参数语法 / 扣费 / 失败不扣 ===")
+    meme_mod = importlib.import_module("gk_plugin.core.meme_api")
+    sticker_mod = importlib.import_module("gk_plugin.domains.sticker")
+    media_mod = importlib.import_module("gk_plugin.utils.media")
+
+    # 一张 1x1 的合法 PNG。不用 Pillow 也能造出来，避免让这一段依赖可选环境。
+    PNG_1PX = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+    src_png = TMP / "meme_src.png"
+    src_png.write_bytes(PNG_1PX)
+
+    check("引号里的内容不被切开", sticker_mod.split_tokens('a "b c" d') == ["a", "b c", "d"],
+          str(sticker_mod.split_tokens('a "b c" d')))
+
+    parsed = sticker_mod.parse_args(["#circle", "左", "自己", "https://x/y.png", "你好"])
+    check("选项 #circle 解析成 True", parsed.options.get("circle") is True, str(parsed.options))
+    check("方向词解析成 direction", parsed.options.get("direction") == "left", str(parsed.options))
+    check("「自己」被识别", parsed.want_self is True)
+    check("链接归到 urls", parsed.urls == ["https://x/y.png"], str(parsed.urls))
+    check("剩下的才是文字", parsed.texts == ["你好"], str(parsed.texts))
+
+    parsed2 = sticker_mod.parse_args(["name=小明", "1=1"])
+    check("key=value 进 options", parsed2.options.get("name") == "小明", str(parsed2.options))
+    check("1=1 被当成普通文字", parsed2.texts == ["1=1"], str(parsed2.texts))
+
+    # meme-generator 的参数字段叫 params_type，不是 params。
+    # 读错字段名的后果是把「需要 1 张图」当成「不需要图」，做出来全是空白。
+    parsed_info = meme_mod._parse_info(
+        "摸头",
+        {
+            "key": "摸头",
+            "keywords": ["摸头", "petpet"],
+            "params_type": {
+                "min_images": 1,
+                "max_images": 2,
+                "min_texts": 0,
+                "max_texts": 1,
+                "default_texts": ["你好"],
+            },
+        },
+    )
+    check("读懂 params_type 的图片数量",
+          (parsed_info.min_images, parsed_info.max_images) == (1, 2), str(parsed_info))
+    check("读懂 params_type 的默认文字",
+          parsed_info.default_texts == ["你好"], str(parsed_info.default_texts))
+    check("关键词被保留", "petpet" in parsed_info.keywords, str(parsed_info.keywords))
+
+    class FakeMeme:
+        """假的 meme-generator。只验插件这一侧的编排，不碰网络。"""
+
+        def __init__(self):
+            self.catalog_data = {
+                "摸头": meme_mod.MemeInfo(
+                    key="摸头", keywords=["摸头", "petpet"],
+                    min_images=1, max_images=1, min_texts=0, max_texts=0,
+                ),
+                "亲亲": meme_mod.MemeInfo(
+                    key="亲亲", keywords=["亲亲", "kiss"],
+                    min_images=2, max_images=2, min_texts=0, max_texts=1,
+                    default_texts=["你好"],
+                ),
+            }
+            self.render_calls = []
+            self.fail = False
+
+        async def catalog(self, force=False):
+            return dict(self.catalog_data)
+
+        async def info(self, key, force=False):
+            if key not in self.catalog_data:
+                raise meme_mod.MemeApiError("没有这个模板")
+            return self.catalog_data[key]
+
+        # 直接复用真实实现，这样关键词匹配逻辑也被覆盖到
+        def find(self, query, catalog):
+            return meme_mod.MemeApi.find(query, catalog)
+
+        def search(self, query, catalog, limit=20):
+            return meme_mod.MemeApi.search(query, catalog, limit)
+
+        async def render(self, key, images, texts, user_infos=None, options=None, timeout=None):
+            self.render_calls.append(
+                {"key": key, "images": len(images), "texts": list(texts),
+                 "user_infos": list(user_infos or []), "options": dict(options or {})}
+            )
+            if self.fail:
+                raise meme_mod.MemeApiError("表情服务炸了")
+            return PNG_1PX, "image/png"
+
+    class _MemeEvent:
+        def __init__(self, at=None, image_path=None, send_ok=True):
+            comps = []
+            if at:
+                comps.append(at_mod.At(qq=at))
+            if image_path:
+                comps.append(at_mod.Image(file=str(image_path)))
+            self.message_obj = types.SimpleNamespace(message=comps, raw_message={})
+            self.bot = types.SimpleNamespace(api=_MemeCall(send_ok))
+            self.calls = self.bot.api.calls
+
+        def get_platform_name(self):
+            return "aiocqhttp"
+
+        def get_self_id(self):
+            return "999999"
+
+        def get_group_id(self):
+            return "2002"
+
+        def get_sender_id(self):
+            return "8008"
+
+        def plain_result(self, text):
+            return text
+
+        def chain_result(self, chain):
+            return ("chain", chain)
+
+        def stop_event(self):
+            self.stopped = True
+
+    class _MemeCall:
+        def __init__(self, send_ok=True):
+            self.calls = []
+            self.send_ok = send_ok
+
+        async def call_action(self, action, **params):
+            self.calls.append((action, params))
+            if action == "send_group_msg":
+                if self.send_ok:
+                    return {"status": "ok", "retcode": 0, "data": {"message_id": 1}}
+                return {"status": "failed", "retcode": 100, "data": None}
+            return {"status": "ok", "retcode": 0, "data": None}
+
+    # 头像走网络，测试里换成固定字节
+    async def _fake_avatar(uid, max_bytes, timeout=10):
+        return PNG_1PX, "image/png", "avatar.png"
+
+    media_mod.load_avatar = _fake_avatar
+    real_meme = plugin.ctx.meme
+    fake = FakeMeme()
+    plugin.ctx.meme = fake
+
+    GID, UID = "2002", "8008"
+    pdb.ensure_member(GID, UID, 0)
+
+    async def _meme_say(text, at=None, image_path=None, send_ok=True, reset_throttle=True):
+        if reset_throttle:
+            sticker_mod._LAST_USE.clear()
+        evt = _MemeEvent(at, image_path, send_ok)
+        replies = []
+        env = command_mod.CommandEnv(
+            event=evt,
+            group_id=GID,
+            sender_id=UID,
+            member=pdb.get_member(GID, UID),
+            text=text,
+        )
+        async for reply in registry_mod.dispatch(plugin.ctx, env):
+            replies.append(reply)
+        return replies, evt
+
+    def _text_of(replies):
+        return "\n".join(str(r) for r in replies)
+
+    # 没带模板 → 给用法，不请求服务
+    replies, _ = asyncio.run(_meme_say("表情"))
+    check("表情没参数给用法", "用法" in _text_of(replies), _text_of(replies))
+
+    # 不存在的模板 → 明确说没找到
+    replies, _ = asyncio.run(_meme_say("表情 不存在的模板"))
+    check("未知模板有提示", "没找到" in _text_of(replies), _text_of(replies))
+
+    # 关键词也能命中（QQ 群里没人记 petpet 这种 key）
+    found = real_meme.find("petpet", fake.catalog_data)
+    check("关键词能找到模板", found is not None and found.key == "摸头", str(found))
+
+    # 正常做一张：本地图 + 扣 1 额度 + 用小图发送
+    pdb.add_quota(GID, UID, 10, "测试充值")
+    before = pdb.balance(GID, UID)
+    replies, evt = asyncio.run(_meme_say("表情 摸头", image_path=src_png))
+    sends = [p for a, p in evt.calls if a == "send_group_msg"]
+    check("表情做成功并发出", bool(sends), str(evt.calls))
+    check("表情按小图发（sub_type=1）",
+          bool(sends) and sends[0]["message"][0]["data"].get("sub_type") == 1, str(sends))
+    check("成功后扣 1 额度", pdb.balance(GID, UID) == before - 1, str(pdb.balance(GID, UID)))
+    check("渲染时带上了图", fake.render_calls and fake.render_calls[-1]["images"] == 1,
+          str(fake.render_calls[-1]))
+
+    # 图不够：只给 1 张，但模板要 2 张 → 自动补发送者头像
+    fake.render_calls.clear()
+    before = pdb.balance(GID, UID)
+    replies, evt = asyncio.run(_meme_say("表情 亲亲", image_path=src_png))
+    check("图不够自动补头像", fake.render_calls and fake.render_calls[-1]["images"] == 2,
+          str(fake.render_calls[-1] if fake.render_calls else "没渲染"))
+    check("没写文字用默认文字",
+          fake.render_calls and fake.render_calls[-1]["texts"] == ["你好"],
+          str(fake.render_calls[-1] if fake.render_calls else "没渲染"))
+    check("补充头像时带上了名字",
+          fake.render_calls and fake.render_calls[-1]["user_infos"][1].get("name"),
+          str(fake.render_calls[-1]["user_infos"] if fake.render_calls else ""))
+
+    # 渲染失败 → 一分不扣
+    fake.fail = True
+    before = pdb.balance(GID, UID)
+    replies, _ = asyncio.run(_meme_say("表情 摸头", image_path=src_png))
+    check("渲染失败有提示", "炸了" in _text_of(replies), _text_of(replies))
+    check("渲染失败不扣额度", pdb.balance(GID, UID) == before, str(pdb.balance(GID, UID)))
+    fake.fail = False
+
+    # 余额不足 → 直接拦下，不去请求服务
+    pdb.add_quota(GID, UID, -pdb.balance(GID, UID), "清空")
+    fake.render_calls.clear()
+    replies, _ = asyncio.run(_meme_say("表情 摸头", image_path=src_png))
+    check("余额不足有提示", "不够" in _text_of(replies), _text_of(replies))
+    check("余额不足不请求渲染", not fake.render_calls, str(fake.render_calls))
+
+    # 连点保护
+    pdb.add_quota(GID, UID, 10, "测试充值")
+    asyncio.run(_meme_say("表情 摸头", image_path=src_png))
+    replies, _ = asyncio.run(
+        _meme_say("表情 摸头", image_path=src_png, reset_throttle=False)
+    )
+    check("连点会被拦", "慢点" in _text_of(replies), _text_of(replies))
+    sticker_mod._LAST_USE.clear()
+
+    # 小图发送失败要能降级成普通图片，而不是把结果丢掉
+    pdb.add_quota(GID, UID, 10, "测试充值")
+    replies, evt = asyncio.run(_meme_say("表情 摸头", image_path=src_png, send_ok=False))
+    check("小图失败降级成普通图",
+          any(isinstance(r, tuple) and r[0] == "chain" for r in replies), str(replies))
+
+    # 列表 / 搜索 / 详情
+    replies, _ = asyncio.run(_meme_say("表情列表"))
+    check("表情列表给出模板", "摸头" in _text_of(replies), _text_of(replies))
+
+    replies, _ = asyncio.run(_meme_say("搜表情 亲"))
+    check("搜表情能搜到", "亲亲" in _text_of(replies), _text_of(replies))
+
+    replies, _ = asyncio.run(_meme_say("搜表情 不存在的词"))
+    check("搜不到时给建议", "没搜到" in _text_of(replies), _text_of(replies))
+
+    replies, _ = asyncio.run(_meme_say("表情详情 摸头"))
+    check("详情说明图片数量", "1 张图" in _text_of(replies), _text_of(replies))
+
+    # 免费模式下不该产生任何额度流水
+    plugin.ctx.config = config_mod.PluginConfig({"meme_cost": 0})
+    before = pdb.balance(GID, UID)
+    asyncio.run(_meme_say("表情 摸头", image_path=src_png))
+    check("免费模式不扣额度", pdb.balance(GID, UID) == before, str(pdb.balance(GID, UID)))
+    plugin.ctx.config = config_mod.PluginConfig({})
+
+    plugin.ctx.meme = real_meme
 
     print("\n=== 5. 信息卡渲染 ===")
     OUT_DIR.mkdir(parents=True, exist_ok=True)

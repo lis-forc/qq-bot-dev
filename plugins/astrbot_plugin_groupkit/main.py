@@ -30,6 +30,7 @@ from .core.command import CommandEnv
 from .core.config import PluginConfig
 from .core.context import PluginContext
 from .core.database import Database
+from .core.meme_api import MemeApi
 from .core.services import Permission, ProfileService, QuotaService, StatsService
 from .domains import notice, stats
 from .domains.registry import dispatch
@@ -63,6 +64,11 @@ class GroupKit(Star):
                 cfg.card_font_path,
                 data_dir / "cards",
             ),
+            meme=MemeApi(
+                cfg.meme_api_base_url,
+                cfg.meme_timeout,
+                cfg.meme_max_image_mb * 1024 * 1024,
+            ),
             plugin_dir=plugin_dir,
             data_dir=data_dir,
         )
@@ -70,6 +76,10 @@ class GroupKit(Star):
         logger.info(f"[群助手] 已加载，数据目录：{data_dir}")
 
     async def terminate(self):
+        try:
+            await self.ctx.meme.close()
+        except Exception as exc:  # 卸载时关连接池失败不该影响插件卸载
+            logger.warning(f"[群助手] 关闭表情服务连接失败: {exc}")
         self.ctx.db.close()
         logger.info("[群助手] 已卸载")
 
@@ -109,11 +119,12 @@ class GroupKit(Star):
                 member=member,
                 text=text,
             )
-            handled = False
             async for reply in dispatch(self.ctx, env):
-                handled = True
                 yield reply
-            if handled:
+            # 命中就算处理完，不能只看「有没有回复」：
+            # 表情包这类命令会把结果直接通过协议端发出去（小图模式），
+            # 走不到 yield，但那句话已经有人负责了，不能再当普通聊天。
+            if env.command is not None:
                 event.stop_event()
                 if not config.count_command_messages:
                     return

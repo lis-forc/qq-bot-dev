@@ -122,6 +122,45 @@
     "default": true,
     "hint": "从 q1.qlogo.cn 拉 640px 头像，圆形裁切。拉取失败会自动画名字首字占位，不会空着。"
   },
+  "meme_api_base_url": {
+    "description": "表情生成服务地址",
+    "type": "string",
+    "default": "http://127.0.0.1:2233",
+    "hint": "插件本身不画图，图是 meme-generator 画的。默认是「同一台机器上跑 Docker 容器」的情形；填错的表现是做表情时提示连不上服务。"
+  },
+  "meme_cost": {
+    "description": "做一张表情扣多少额度",
+    "type": "int",
+    "default": 1,
+    "slider": { "min": 0, "max": 20, "step": 1 },
+    "hint": "做成之后才扣，失败不扣。设 0 表示免费。查模板列表、看详情不扣额度。"
+  },
+  "meme_timeout": {
+    "description": "表情生成超时秒数",
+    "type": "int",
+    "default": 30,
+    "slider": { "min": 5, "max": 120, "step": 5 },
+    "hint": "动图模板比较慢，经常超时就调大。"
+  },
+  "meme_max_image_mb": {
+    "description": "单张素材图大小上限 (MB)",
+    "type": "int",
+    "default": 10,
+    "slider": { "min": 1, "max": 50, "step": 1 },
+    "hint": "群里偶尔有人发很大的原图，超过就放弃这张并提示，不会把内存吃光。"
+  },
+  "meme_auto_avatar": {
+    "description": "图不够时自动补发送者头像",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉之后必须自己 @人 或发图，否则会提示「图片数量不符」。"
+  },
+  "meme_auto_texts": {
+    "description": "没写文字时用模板默认文字",
+    "type": "bool",
+    "default": true,
+    "hint": "很多模板自带「你好」之类的默认文字，关掉就必须每次手写。"
+  },
   "owner_default_level": {
     "description": "QQ 群主默认权限等级",
     "type": "int",
