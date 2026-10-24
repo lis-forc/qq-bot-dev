@@ -166,6 +166,12 @@ def main() -> None:
     config_mod = importlib.import_module("gk_plugin.core.config")
     db_mod = importlib.import_module("gk_plugin.core.database")
     card_mod = importlib.import_module("gk_plugin.utils.card")
+    # 重构后的功能模块：命令表、分发器、各领域
+    command_mod = importlib.import_module("gk_plugin.core.command")
+    admin_mod = importlib.import_module("gk_plugin.domains.admin")
+    help_mod = importlib.import_module("gk_plugin.domains.help")
+    profile_mod = importlib.import_module("gk_plugin.domains.profile")
+    registry_mod = importlib.import_module("gk_plugin.domains.registry")
 
     print("\n=== 1. 口令解析 ===")
     check("compact 压空白", router.compact("  改名   李四 ") == "改名 李四")
@@ -377,10 +383,10 @@ def main() -> None:
 
     # 「踢 @某人 拉黑」的分叉：判错不会报错，只在几天后有人重新申请时才暴露。
     check("踢人参数解析", router.drop_prefix("踢 @张三 拉黑", ("踢", "踢人")) == "拉黑")
-    check("拉黑后缀生效", mod.parse_kick_reject("拉黑") is True)
-    check("黑名单也算拉黑", mod.parse_kick_reject("黑名单") is True)
-    check("不写后缀=普通踢人", mod.parse_kick_reject("") is False)
-    check("别的理由不误判", mod.parse_kick_reject("刷屏") is False)
+    check("拉黑后缀生效", admin_mod.parse_kick_reject("拉黑") is True)
+    check("黑名单也算拉黑", admin_mod.parse_kick_reject("黑名单") is True)
+    check("不写后缀=普通踢人", admin_mod.parse_kick_reject("") is False)
+    check("别的理由不误判", admin_mod.parse_kick_reject("刷屏") is False)
 
     print("\n=== 4. 真实入群天数 / 显示名 / 文案 ===")
     plugin = mod.GroupKit(
@@ -393,8 +399,8 @@ def main() -> None:
             "enabled_group_ids": ["1001"],
         },
     )
-    profiles = plugin.profiles
-    pdb = plugin.db  # 第 4/5 节统一用插件自己的库，别和上面的临时 db 混用
+    profiles = plugin.ctx.profiles
+    pdb = plugin.ctx.db  # 第 4/5 节统一用插件自己的库，别和上面的临时 db 混用
 
     gid2, uid2 = "1001", "3003"
     pdb.ensure_member(gid2, uid2, welcome_quota=20)
@@ -447,7 +453,7 @@ def main() -> None:
         def get_group_id(self):
             return "1001"
 
-    perm = plugin.permission
+    perm = plugin.ctx.permission
     roles = {"3003": "owner", "6006": "member"}
     ev = FakeEvent(roles)
 
@@ -481,21 +487,21 @@ def main() -> None:
         pdb.bump_message("1001", "6006", 3)
 
     print("\n--- 抽奖 ---")
-    draw_text = plugin.quota.draw("1001", "6006")
+    draw_text = plugin.ctx.quota.draw("1001", "6006")
     print(draw_text)
     check("抽奖有结果", "获得额度" in draw_text, draw_text.replace("\n", " | "))
 
     print("\n--- 额度 ---")
-    quota_text = plugin.quota.render("1001", "6006", pdb.get_member("1001", "6006"))
+    quota_text = plugin.ctx.quota.render("1001", "6006", pdb.get_member("1001", "6006"))
     print(quota_text)
     check("额度页有进度", "抽奖进度" in quota_text)
 
     print("\n--- 统计 ---")
-    stats_text = plugin.stats.render("1001", "6006", pdb.get_member("1001", "6006"))
+    stats_text = plugin.ctx.stats.render("1001", "6006", pdb.get_member("1001", "6006"))
     print(stats_text)
     check("统计页有今日", "今日：3 条" in stats_text, stats_text.replace("\n", " | "))
 
-    pages = plugin._help_pages()
+    pages = help_mod.pages(plugin.ctx)
     print(f"\n--- 帮助（{len(pages)} 页） ---")
     for title, body in pages:
         print(f"\n[{title}]\n{body}")
@@ -547,8 +553,8 @@ def main() -> None:
 
     async def _ask_missing() -> list:
         replies = []
-        async for reply in plugin._card_reply(
-            _CardEvent(), "1001", "6006", "10001", pdb.get_member("1001", "6006")
+        async for reply in profile_mod.card_reply(
+            plugin.ctx, _CardEvent(), "1001", "6006", "10001", pdb.get_member("1001", "6006")
         ):
             replies.append(reply)
         return replies
@@ -661,9 +667,16 @@ def main() -> None:
     async def _kick(args: str) -> tuple[list, list]:
         ev = _KickEvent("7007")
         replies = []
-        async for reply in plugin._cmd_kick(
-            ev, "1001", "6006", pdb.get_member("1001", "6006"), args
-        ):
+        # 走完整分发链路：路由命中 → 权限校验 → 处理函数 → 调协议端。
+        # 这样「踢」这条命令的口令、等级、参数解析一起被验证到。
+        env = command_mod.CommandEnv(
+            event=ev,
+            group_id="1001",
+            sender_id="6006",
+            member=pdb.get_member("1001", "6006"),
+            text=f"踢 {args}".strip(),
+        )
+        async for reply in registry_mod.dispatch(plugin.ctx, env):
             replies.append(reply)
         return replies, ev.calls
 
@@ -683,7 +696,7 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     data = profiles.card_data(gid2, uid2, pdb.get_member(gid2, uid2), pdb.counts(gid2, uid2))
     check("卡片用真实天数", data["days"] == 30, str(data["days"]))
-    path = plugin.cards.render(data)
+    path = plugin.ctx.cards.render(data)
     check("渲染成功", path is not None and Path(path).exists())
     if path:
         target = OUT_DIR / "card_preview.png"
@@ -694,7 +707,7 @@ def main() -> None:
     original_pil = card_mod.PIL_AVAILABLE
     try:
         card_mod.PIL_AVAILABLE = False
-        check("无 Pillow 时退回文字卡", plugin.cards.render(dict(data)) is None)
+        check("无 Pillow 时退回文字卡", plugin.ctx.cards.render(dict(data)) is None)
     finally:
         card_mod.PIL_AVAILABLE = original_pil
 
@@ -709,7 +722,7 @@ def main() -> None:
         month=10**9,
         total=10**9,
     )
-    weird_path = plugin.cards.render(weird)
+    weird_path = plugin.ctx.cards.render(weird)
     check("极端数据不崩", weird_path is not None and Path(weird_path).exists())
 
     # 背景图尺寸不一致时应自动缩放（会走 RESAMPLE 分支，顺带验证 Pillow 兼容性）
@@ -734,18 +747,114 @@ def main() -> None:
     PILImage.new("RGB", (640, 640), (200, 180, 240)).save(avatar_buf, "PNG")
     avatar_bytes = avatar_buf.getvalue()
 
-    with_avatar = plugin.cards.render(dict(data), avatar_bytes)
+    with_avatar = plugin.ctx.cards.render(dict(data), avatar_bytes)
     check("带头像渲染成功", with_avatar is not None and Path(with_avatar).exists())
-    without_avatar = plugin.cards.render(dict(data), None)
+    without_avatar = plugin.ctx.cards.render(dict(data), None)
     check("无头像走首字占位", without_avatar is not None and Path(without_avatar).exists())
-    broken_avatar = plugin.cards.render(dict(data), b"not-an-image")
+    broken_avatar = plugin.ctx.cards.render(dict(data), b"not-an-image")
     check("头像数据损坏不崩", broken_avatar is not None and Path(broken_avatar).exists())
     check("关闭头像开关时跳过", config_mod.PluginConfig({"card_show_avatar": False}).card_show_avatar is False)
     check("默认开启头像", config_mod.PluginConfig({}).card_show_avatar is True)
     check("默认新人礼 5", config_mod.PluginConfig({}).welcome_quota == 5)
     check("默认改名 1", config_mod.PluginConfig({}).rename_cost == 1)
 
-    plugin.db.close()
+    print("\n=== 6. 命令注册表（后续加功能的地基）===")
+    cmd_list = registry_mod.COMMANDS
+    check("命令表非空", len(cmd_list) >= 16, str(len(cmd_list)))
+    check("命令 key 不重复", len({c.key for c in cmd_list}) == len(cmd_list))
+    check("每个命令都有帮助条目", all(c.help for c in cmd_list),
+          str([c.key for c in cmd_list if not c.help]))
+    # 管理命令必须在权限页可见：漏写 perm_short 的话，群里没人知道这个功能
+    # 需要什么等级才能用，只能靠试。
+    check("管理命令都在权限页登记",
+          all(c.perm_short or c.perm_extra for c in cmd_list if c.level > 1),
+          str([c.key for c in cmd_list if c.level > 1 and not c.perm_short and not c.perm_extra]))
+
+    # 管理命令必须声明等级。漏写的话 level 默认 1，等于把禁言/踢人开放给所有人，
+    # 而且不会有任何报错 —— 这条断言是防止那种事故的唯一手段。
+    must_be_admin = {
+        "mute", "unmute", "kick",
+        "whole_ban_on", "whole_ban_off",
+        "quota_add", "quota_sub", "grant",
+    }
+    levels = {c.key: c.level for c in cmd_list}
+    check("管理命令都声明了等级",
+          all(levels.get(k, 1) > 1 for k in must_be_admin),
+          str({k: levels.get(k) for k in must_be_admin}))
+
+    # 帮助里写的用法，必须真的能命中对应命令。写错一个字群友就用不了，
+    # 而这种错不会报异常，只会「发了没反应」。
+    def _dispatch_key(text: str) -> str | None:
+        lower = text.lower()
+        for c in cmd_list:
+            if c.matcher(plugin.ctx, text, lower) is not None:
+                return c.key
+        return None
+
+    mismatched = []
+    for c in cmd_list:
+        for entry in c.help:
+            head = entry.usage.split("/")[0].split(" ")[0].strip()
+            if head and _dispatch_key(head) != c.key:
+                mismatched.append(f"{c.key}:{head}->{_dispatch_key(head)}")
+    check("帮助里的用法都能命中对应命令", not mismatched, str(mismatched))
+
+    # 扩展性验证：往表里加一条命令，帮助和权限页应当自动出现它。
+    # 这是这次重构要买的唯一东西，所以必须有测试盯着。
+    async def _probe_handler(ctx, env):
+        yield env.event.plain_result("probe")
+
+    probe = command_mod.Command(
+        key="__probe__",
+        matcher=command_mod.exact(("探测口令",)),
+        handler=_probe_handler,
+        perm_short="探测功能",
+        help=(command_mod.HelpEntry("探测口令", "扩展性验证", page="base", order=95),),
+    )
+    cmd_list.append(probe)
+    try:
+        probe_pages = help_mod.pages(plugin.ctx)
+        probe_all = "\n".join(body for _, body in probe_pages)
+        check("新命令自动进帮助菜单", "探测口令" in probe_all)
+        check("新命令自动进权限页", "探测功能" in probe_pages[2][1])
+    finally:
+        cmd_list.remove(probe)
+    check("临时命令已撤掉", "__probe__" not in {c.key for c in cmd_list})
+
+    # 普通聊天不能被任何口令误吞。这条比「能命中」更重要：
+    # 口令太宽会把群友的正常聊天吃掉，而且完全没有报错。
+    async def _no_match(text: str) -> list:
+        ev = _KickEvent("7007")
+        env = command_mod.CommandEnv(
+            event=ev,
+            group_id="1001",
+            sender_id="6006",
+            member=pdb.get_member("1001", "6006"),
+            text=text,
+        )
+        return [r async for r in registry_mod.dispatch(plugin.ctx, env)]
+
+    for phrase in ("今天吃什么", "有人吗", "哈哈哈", "你在干嘛呢"):
+        check(f"普通聊天不误触发：{phrase}", asyncio.run(_no_match(phrase)) == [])
+
+    # 端到端：口令 → 分发器 → 处理函数 → 回复，整条链路走一遍。
+    # 重构最容易出的事故就是「路由通了但处理函数忘了接上」，只看 matcher 查不出来。
+    async def _reply_of(text: str) -> list:
+        ev = _KickEvent("7007")
+        env = command_mod.CommandEnv(
+            event=ev,
+            group_id="1001",
+            sender_id="6006",
+            member=pdb.get_member("1001", "6006"),
+            text=text,
+        )
+        return [r async for r in registry_mod.dispatch(plugin.ctx, env)]
+
+    for phrase, keyword in (("额度", "额度"), ("今日", "今日"), ("额度记录", "额度")):
+        got = asyncio.run(_reply_of(phrase))
+        check(f"口令「{phrase}」端到端有回复", bool(got) and keyword in str(got[0]), str(got))
+
+    plugin.ctx.db.close()
 
     print(f"\n=== 结果：{len(PASS)} 通过 / {len(FAIL)} 失败 ===")
     for item in FAIL:

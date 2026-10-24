@@ -348,16 +348,27 @@ idx_members_messages     (group_id, total_messages DESC)  排行榜预留
 
 ```
 astrbot_plugin_groupkit/
-├── main.py                 # 事件入口 + 口令路由 + 群管
+├── main.py                 # 入口：建依赖 + 事件编排 + 每日维护（不放功能）
 ├── metadata.yaml
 ├── _conf_schema.json
 ├── requirements.txt
-├── core/
+├── core/                   # 与功能无关的地基
 │   ├── config.py           # 配置强类型封装（全部带兜底）
 │   ├── database.py         # SQLite：members / daily_stats / quota_logs / op_logs
-│   └── services.py         # 权限 / 资料 / 统计 / 额度，返回文本不直接发
+│   ├── services.py         # 权限 / 资料 / 统计 / 额度，返回文本不直接发
+│   ├── context.py          # PluginContext：把上面这些打包，处理函数只接它
+│   └── command.py          # 命令表的数据结构 + 匹配器工厂
+├── domains/                # 一个功能一个文件
+│   ├── registry.py         # ★ 命令清单 + 分发器（加功能就改这里）
+│   ├── profile.py          # 信息卡 / 改名 / 爱好
+│   ├── quota.py            # 额度 / 抽奖 / 额度记录
+│   ├── stats.py            # 今日发言 + 每条消息计数
+│   ├── admin.py            # 禁言 / 踢人 / 全群 / 发扣额度 / 授权
+│   ├── help.py             # 帮助菜单（从 registry 生成，不手写）
+│   └── notice.py           # 入群等通知事件
 ├── utils/
 │   ├── router.py           # compact / strip_at / drop_prefix / parse_duration…
+│   ├── event.py            # 读原始报文、@ 目标解析
 │   ├── onebot.py           # call_action 封装，失败只记日志不抛
 │   └── card.py             # 信息卡渲染（含 emoji 过滤）
 ├── assets/                 # 背景图 + 字体
@@ -371,16 +382,69 @@ astrbot_plugin_groupkit/
 
 ---
 
+## 加一个新功能
+
+功能都在 `domains/` 里，`main.py` 不用改。以「表情包」为例：
+
+**1. 建 `domains/sticker.py`**
+
+```python
+from ..core.command import Command, CommandEnv, HelpEntry, prefix
+
+async def sticker(ctx, env: CommandEnv):
+    # env.args 是口令后面的部分，env.event 可以发消息
+    yield env.event.plain_result("🖼 表情包生成中…")
+
+COMMANDS = [
+    Command(
+        key="sticker",                       # 唯一标识，重复会在启动时报错
+        matcher=prefix(("表情包", "做表情")),   # 口令：表情包 xxx / 做表情 xxx
+        handler=sticker,
+        level=1,                             # 需要的权限等级；管理功能填 2~4
+        perm_short="表情包",                  # 权限页里的简称
+        help=(HelpEntry("表情包 文字", "生成一张表情包", page="base", order=60),),
+    ),
+]
+```
+
+**2. 在 `domains/registry.py` 的 `COMMANDS` 里加一行**
+
+```python
+from . import sticker
+...
+    *admin.COMMANDS,
+    *sticker.COMMANDS,     # ← 放在哪个位置 = 匹配优先级，注意别被更宽的口令挡住
+]
+```
+
+做完这两步，帮助菜单、权限页、权限校验全都自动生效。跑一遍
+`python tools/selftest.py`，里面有断言盯着「管理命令有没有声明等级」
+「帮助里的用法能不能真的命中命令」。
+
+**要扣额度**：任何功能都走同一句，不要自己 UPDATE 余额表——
+
+```python
+ok, balance = ctx.db.add_quota(env.group_id, env.sender_id, -cost, "表情包", "system")
+if not ok:
+    yield env.event.plain_result(f"额度不够，这个要 {cost}")
+    return
+```
+
+余额判断和扣减是同一条 SQL，并发下也扣不成负数。
+
+---
+
 ## 本地自测
 
 ```bash
 python tools/selftest.py
 ```
 
-用桩替换 `astrbot.*`，跑一百多项断言：口令解析、配置兜底、抽奖进度数学、
+用桩替换 `astrbot.*`，跑 127 项断言：口令解析、配置兜底、抽奖进度数学、
 新人礼只发一次、余额不足拒绝扣款、事务异常整体回滚、索引齐全、保留期裁剪、
 在线备份、真实入群天数、emoji 过滤、文案渲染、信息卡渲染、并发扣款、
-额度记录排版、踢人拉黑的参数传递。
+额度记录排版、踢人拉黑的参数传递、命令表结构自检（key 不重复、管理命令声明等级、
+帮助用法能命中命令、普通聊天不被误吞）。
 改完代码先跑这个再传服务器。
 
 ---
@@ -398,7 +462,15 @@ python tools/selftest.py
 
 ## 后续可以往上加（已留接口）
 
-- 入群欢迎 / 自动同步群名片：`on_event` 里已有 notice 分支的入口（`_handle_notice`）。
-- 骰子、抽卡、签到：都是新的路由分支，额度直接走 `db.add_quota`。
-- 图文并发回复：`event.chain_result([Image(...), Plain(...)])`。
-- 接 AI：在 `_route` 最后加兜底分支。
+- **入群欢迎 / 入群验证**：`domains/notice.py`，`handle_notice` 里已经拿到
+  `group_increase` 事件和入群时间，加分支即可。
+- **骰子、抽卡、表情包、签到**：在 `domains/` 建文件 + `registry.py` 加一行。
+  额度统一走 `ctx.db.add_quota`，余额判断和扣减在同一条 SQL 里，并发扣不成负数。
+- **图文并发回复**：`event.chain_result([Image(...), Plain(...)])`，
+  `domains/profile.py` 的信息卡已经是这个形式。
+- **接 AI**：写一个 `domains/ai.py`，用 `custom()` 匹配器做兜底口令
+  （`return None` 表示不接），放在 `COMMANDS` 最后一位即可，前面所有命令
+  都不命中时才会轮到它。
+- **外部接口类功能**（热搜、票房、运势）：同样建 domain，注意这类要
+  **先扣额度再请求**，因为烧的是你的额度；本地生成类（表情包、运势图）
+  建议**成功后扣**，做不出来不收钱。

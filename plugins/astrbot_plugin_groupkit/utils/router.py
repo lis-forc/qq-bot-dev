@@ -71,6 +71,17 @@ def parse_duration(text: str | None, default_unit: str = "分钟") -> int | None
     return max(0, min(int(value * factor), MAX_MUTE_SECONDS))
 
 
+def fmt_duration(seconds: int) -> str:
+    """秒数转人话：3600 → 「1 小时」。除不尽就老实报秒。"""
+    if seconds >= 86400 and seconds % 86400 == 0:
+        return f"{seconds // 86400} 天"
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600} 小时"
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60} 分钟"
+    return f"{seconds} 秒"
+
+
 def validate_display_name(name: str) -> tuple[bool, str]:
     """显示名：1~12 个字，允许中文/英文/数字/空格，不允许换行和控制符。"""
     cleaned = compact(name)
