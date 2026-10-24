@@ -16,6 +16,7 @@ import importlib
 import importlib.util
 import sys
 import tempfile
+import threading
 import time
 import types
 from pathlib import Path
@@ -290,6 +291,54 @@ def main() -> None:
     backup = db.backup_to(TMP / "backup" / "groupkit-copy.db")
     check("在线备份可用", backup.exists() and backup.stat().st_size > 0)
 
+    print("\n=== 3.6 并发安全 / 暴击加成 ===")
+    # 「判余额」和「写余额」必须原子。先读后写的实现会在并发下透支，
+    # 这里用两个线程同时扣款把那个场景真实跑出来。
+    def race(call, times: int = 2):
+        barrier = threading.Barrier(times)
+        results: list = []
+        guard = threading.Lock()
+
+        def worker():
+            barrier.wait()
+            out = call()
+            with guard:
+                results.append(out)
+
+        threads = [threading.Thread(target=worker) for _ in range(times)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return results
+
+    db.ensure_member(gid, "race1", 0)
+    db.add_quota(gid, "race1", 10, "初始", allow_negative=True)
+    results = race(lambda: db.add_quota(gid, "race1", -8, "并发扣款"))
+    check("并发扣款只成功一次", sum(1 for ok, _ in results if ok) == 1, str(results))
+    check("并发扣款不透支", db.balance(gid, "race1") == 2, str(db.balance(gid, "race1")))
+
+    db.ensure_member(gid, "race2", 0)
+    db.bump_message(gid, "race2", 1)  # 攒 1 次抽奖机会
+    results = race(lambda: db.consume_draw(gid, "race2"))
+    check("并发抽奖只成功一次", sum(1 for ok, _ in results if ok) == 1, str(results))
+    check(
+        "抽奖次数不会变负",
+        db.get_member(gid, "race2")["draws"] == 0,
+        str(db.get_member(gid, "race2")["draws"]),
+    )
+
+    # 暴击必须是「加成」。原来写 max(amount, bonus)，draw_max 高于 bonus 时暴击无效。
+    services_mod = importlib.import_module("gk_plugin.core.services")
+    crit_cfg = config_mod.PluginConfig(
+        {"draw_min": 20, "draw_max": 20, "draw_bonus_chance": 1.0, "draw_bonus_amount": 8}
+    )
+    crit_quota = services_mod.QuotaService(db, crit_cfg)
+    db.ensure_member(gid, "crit1", 0)
+    db.bump_message(gid, "crit1", 1)
+    crit_text = crit_quota.draw(gid, "crit1")
+    check("暴击是加成不是取大", "+28" in crit_text, crit_text.replace("\n", " | "))
+
     print("\n=== 4. 真实入群天数 / 显示名 / 文案 ===")
     plugin = mod.GroupKit(
         context=None,
@@ -410,6 +459,67 @@ def main() -> None:
     check("帮助 3 页", len(pages) == 3)
     check("帮助里没有立名", all("立名" not in body for _, body in pages))
     check("帮助说明授权不看身份", "不看身份" in pages[2][1])
+    # 「额度 / 抽奖 / 今日」必须是独立条目，不能缩进挂在「爱好」的说明下面
+    check(
+        "帮助里额度是独立条目",
+        "\n额度 / 抽奖 / 今日\n" in pages[0][1],
+        pages[0][1].replace("\n", " | "),
+    )
+
+    print("\n=== 4.7 查陌生人不能凭空建档 ===")
+    onebot_mod = importlib.import_module("gk_plugin.utils.onebot")
+
+    class _MissingApi:
+        async def call_action(self, action, **params):
+            raise RuntimeError("member not found")
+
+    class _CardEvent:
+        """只够 _card_reply 用的最小 event。"""
+
+        message_str = "i 10001"
+
+        def __init__(self):
+            self.bot = types.SimpleNamespace(api=_MissingApi())
+            self.message_obj = types.SimpleNamespace(message=[], raw_message={})
+
+        def get_platform_name(self):
+            return "aiocqhttp"
+
+        def get_self_id(self):
+            return "999999"
+
+        def get_group_id(self):
+            return "1001"
+
+        def get_sender_id(self):
+            return "6006"
+
+        def plain_result(self, text):
+            return text
+
+        def chain_result(self, chain):
+            return chain
+
+    async def _ask_missing() -> list:
+        replies = []
+        async for reply in plugin._card_reply(
+            _CardEvent(), "1001", "6006", "10001", pdb.get_member("1001", "6006")
+        ):
+            replies.append(reply)
+        return replies
+
+    quiet_saved = onebot_mod.logger
+    onebot_mod.logger = types.SimpleNamespace(
+        error=lambda *a, **k: None, warning=lambda *a, **k: None, info=lambda *a, **k: None
+    )
+    try:
+        ghost = asyncio.run(_ask_missing())
+    finally:
+        onebot_mod.logger = quiet_saved
+
+    check("查不在群的人有明确提示", any("没找到" in str(r) for r in ghost), str(ghost))
+    # 老实现会先 ensure_member 再查，人不在群也会写一行 members，永久污染成员表
+    check("不存在的 QQ 不建档", pdb.get_member("1001", "10001") is None)
 
     print("\n=== 4.8 协议端返回值判定（群管假失败）===")
     onebot = importlib.import_module("gk_plugin.utils.onebot")
@@ -471,6 +581,14 @@ def main() -> None:
         target = OUT_DIR / "card_preview.png"
         target.write_bytes(Path(path).read_bytes())
         print(f"  预览已保存：{target}")
+
+    # 没装 Pillow 时不能抛异常：必须返回 None，让上层退化成文字卡
+    original_pil = card_mod.PIL_AVAILABLE
+    try:
+        card_mod.PIL_AVAILABLE = False
+        check("无 Pillow 时退回文字卡", plugin.cards.render(dict(data)) is None)
+    finally:
+        card_mod.PIL_AVAILABLE = original_pil
 
     # 极端数据不能把版式撑崩
     weird = dict(

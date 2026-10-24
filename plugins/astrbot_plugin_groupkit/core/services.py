@@ -130,13 +130,20 @@ class ProfileService:
 
     # ---------------------------------------------------------- 协议端补全
     async def refresh_from_qq(
-        self, event, group_id: str, user_id: str, member: dict[str, Any] | None
+        self,
+        event,
+        group_id: str,
+        user_id: str,
+        member: dict[str, Any] | None,
+        info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """从协议端补全真实入群时间 / 性别 / 群名片，并缓存进库。
 
         只在缺字段时才请求接口，所以一个成员一辈子基本只查一次。
         注意：NapCat 的 get_group_member_info 会返回 join_time（unix 秒），
         这是「真实入群时间」的来源，不用等 group_increase 通知。
+
+        info 用来复用一个已经查到手的成员信息，避免同一件事查两遍。
         """
         need = (
             not member
@@ -147,7 +154,8 @@ class ProfileService:
         if not need:
             return member or {}
 
-        info = await onebot.get_member_info(event, group_id, user_id)
+        if info is None:
+            info = await onebot.get_member_info(event, group_id, user_id)
         if not info:
             return member or {}
 
@@ -297,7 +305,9 @@ class QuotaService:
         amount = random.randint(self.config.draw_min, self.config.draw_max)
         crit = self.config.draw_bonus_chance > 0 and random.random() < self.config.draw_bonus_chance
         if crit:
-            amount = max(amount, self.config.draw_bonus_amount)
+            # 加成，不是「取较大值」：原来写 max(amount, bonus)，
+            # 一旦 draw_max 调到 bonus 之上，暴击就和普通结果完全一样，等于没暴击。
+            amount += self.config.draw_bonus_amount
         _, balance = self.db.add_quota(
             group_id, user_id, amount, "抽奖" + ("暴击" if crit else ""), user_id
         )

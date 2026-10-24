@@ -304,16 +304,29 @@ class GroupKit(Star):
     async def _card_reply(
         self, event, group_id: str, sender_id: str, target_id: str, member
     ) -> AsyncGenerator:
+        info: dict | None = None
         if target_id == sender_id and member:
             target_member = member
         else:
-            target_member = await asyncio.to_thread(
-                self.db.ensure_member, group_id, target_id, 0
-            )
+            # 先只读，绝不顺手建档。否则 `i 10001` 这种随手输的号码会给
+            # 陌生人凭空写一行 members，永久污染成员表。
+            target_member = await asyncio.to_thread(self.db.get_member, group_id, target_id)
+            if target_member is None:
+                # 库里没有 = 从没在本群说过话，先问协议端他在不在群
+                info = await onebot.get_member_info(event, group_id, target_id)
+                if not info:
+                    yield event.plain_result(
+                        "🔍 没找到这个成员\n"
+                        "确认一下 QQ 号，或者人不在这个群里"
+                    )
+                    return
+                target_member = await asyncio.to_thread(
+                    self.db.ensure_member, group_id, target_id, 0
+                )
 
         # 补全真实入群时间 / 性别 / 群名片。缺字段才发请求，一个成员基本只查一次。
         target_member = await self.profiles.refresh_from_qq(
-            event, group_id, target_id, target_member
+            event, group_id, target_id, target_member, info=info
         )
 
         counts = await asyncio.to_thread(self.db.counts, group_id, target_id)
@@ -375,8 +388,9 @@ class GroupKit(Star):
             f"改名 李四\n"
             f"  改显示名，消耗 {self.config.rename_cost} {cur}\n\n"
             f"爱好 打游戏\n"
-            f"  {cur} / 抽奖 / 今日\n"
-            f"  查询余额、抽奖、发言统计\n\n"
+            f"  设置信息卡上的爱好\n\n"
+            f"{cur} / 抽奖 / 今日\n"
+            f"  余额、抽奖机会、发言统计\n\n"
             f"帮助\n"
             f"  本菜单\n\n"
             f"新手礼：首次发言自动到账 {self.config.welcome_quota} {cur}；"
@@ -446,7 +460,7 @@ class GroupKit(Star):
             return
         targets = self._at_targets(event, sender_id)
         if not targets:
-            yield event.plain_result("格式：禁言 @某人 10分钟")
+            yield event.plain_result(self._target_hint(event, "格式：禁言 @某人 10分钟"))
             return
         seconds = parse_duration(strip_at(args))
         if seconds is None:
@@ -477,7 +491,7 @@ class GroupKit(Star):
             return
         targets = self._at_targets(event, sender_id)
         if not targets:
-            yield event.plain_result("格式：解禁 @某人")
+            yield event.plain_result(self._target_hint(event, "格式：解禁 @某人"))
             return
         if not await onebot.is_bot_admin(event, group_id):
             yield event.plain_result("⚠️ 机器人没有群管理权限，没法解禁")
@@ -494,7 +508,7 @@ class GroupKit(Star):
             return
         targets = self._at_targets(event, sender_id)
         if not targets:
-            yield event.plain_result("格式：踢 @某人")
+            yield event.plain_result(self._target_hint(event, "格式：踢 @某人"))
             return
         target = targets[0]
         if target in {sender_id, str(event.get_self_id() or "")}:
@@ -536,10 +550,12 @@ class GroupKit(Star):
             return
         targets = self._at_targets(event, sender_id)
         amount = abs(parse_int(strip_at(args)))
-        if not targets or amount <= 0:
-            yield event.plain_result(
-                f"格式：{'发' if sign > 0 else '扣'}{self.config.currency_name} @某人 50"
-            )
+        fmt = f"格式：{'发' if sign > 0 else '扣'}{self.config.currency_name} @某人 50"
+        if not targets:
+            yield event.plain_result(self._target_hint(event, fmt))
+            return
+        if amount <= 0:
+            yield event.plain_result(fmt)
             return
 
         target = targets[0]
@@ -599,6 +615,14 @@ class GroupKit(Star):
     def _at_targets(self, event, sender_id: str) -> list[str]:
         self_id = str(event.get_self_id() or "")
         return [t for t in onebot.get_at_targets(event) if t not in {sender_id, self_id}]
+
+    def _target_hint(self, event, fmt: str) -> str:
+        """没解析出目标时给出准确原因。
+
+        目标里会滤掉「自己」和「机器人」，所以 `禁言 @自己 10分钟` 会得到
+        空目标。这时回一句「格式：禁言 @某人」等于骗人——他明明 @ 了人。
+        """
+        return "⚠️ 不能对自己或机器人操作" if onebot.get_at_targets(event) else fmt
 
     def _at_target(self, event, sender_id: str) -> str | None:
         targets = self._at_targets(event, sender_id)

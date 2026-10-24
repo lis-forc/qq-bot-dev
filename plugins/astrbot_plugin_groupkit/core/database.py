@@ -392,6 +392,16 @@ class Database:
             (group_id, user_id, amount, reason, operator_id, _now()),
         )
 
+    def balance(self, group_id: str, user_id: str) -> int:
+        """当前余额（读不到按 0）。"""
+        return int(
+            self._scalar(
+                "SELECT quota FROM members WHERE group_id = ? AND user_id = ?",
+                (group_id, user_id),
+            )
+            or 0
+        )
+
     def add_quota(
         self,
         group_id: str,
@@ -403,34 +413,53 @@ class Database:
     ) -> tuple[bool, int]:
         """加减额度。返回 (是否成功, 变更后余额)。
 
-        「改余额」和「记流水」在同一个事务里，不会出现只改一半。
+        两个约束都在同一处保证：
+
+        1. 「改余额」和「记流水」在同一个事务里，不会只改一半。
+        2. 「够不够扣」的判定塞进 UPDATE 的 WHERE 里，由 SQLite 原子完成。
+           如果先 SELECT 余额、判断、再 UPDATE，两个并发的扣款会各自读到
+           同一个旧余额、各自判定通过，最后把余额扣成负数
+           （余额 10，两笔 -8 同时到 → -6）。
         """
-        member = self.ensure_member(group_id, user_id)
-        current = int(member.get("quota") or 0)
-        if amount < 0 and not allow_negative and current + amount < 0:
-            return False, current
+        self.ensure_member(group_id, user_id)
         with self._tx():
-            self.conn.execute(
-                "UPDATE members SET quota = quota + ?, updated_at = ? "
-                "WHERE group_id = ? AND user_id = ?",
-                (amount, _now(), group_id, user_id),
-            )
+            if amount < 0 and not allow_negative:
+                cur = self.conn.execute(
+                    "UPDATE members SET quota = quota + ?, updated_at = ? "
+                    "WHERE group_id = ? AND user_id = ? AND quota + ? >= 0",
+                    (amount, _now(), group_id, user_id, amount),
+                )
+            else:
+                cur = self.conn.execute(
+                    "UPDATE members SET quota = quota + ?, updated_at = ? "
+                    "WHERE group_id = ? AND user_id = ?",
+                    (amount, _now(), group_id, user_id),
+                )
+            if not cur.rowcount:  # 条件没满足 = 余额不足
+                return False, self.balance(group_id, user_id)
             self._log_quota(group_id, user_id, amount, reason, operator_id)
-        return True, current + amount
+            return True, self.balance(group_id, user_id)
 
     def consume_draw(self, group_id: str, user_id: str) -> tuple[bool, int]:
-        """消耗一次抽奖机会。返回 (是否成功, 剩余次数)。"""
-        member = self.ensure_member(group_id, user_id)
-        draws = int(member.get("draws") or 0)
-        if draws <= 0:
-            return False, 0
+        """消耗一次抽奖机会。返回 (是否成功, 剩余次数)。
+
+        和 add_quota 同理：递减走 `draws > 0` 的条件 UPDATE。
+        先读后写的话，两次并发抽奖会各自看到 draws=1，抽完变成 -1。
+        """
+        self.ensure_member(group_id, user_id)
         with self._tx():
-            self.conn.execute(
+            cur = self.conn.execute(
                 "UPDATE members SET draws = draws - 1, updated_at = ? "
-                "WHERE group_id = ? AND user_id = ?",
+                "WHERE group_id = ? AND user_id = ? AND draws > 0",
                 (_now(), group_id, user_id),
             )
-        return True, draws - 1
+            if not cur.rowcount:
+                return False, 0
+            row = self.conn.execute(
+                "SELECT draws FROM members WHERE group_id = ? AND user_id = ?",
+                (group_id, user_id),
+            ).fetchone()
+            return True, int(row[0]) if row else 0
 
     def quota_history(
         self, group_id: str, user_id: str, limit: int = 5

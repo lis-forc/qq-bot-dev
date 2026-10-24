@@ -14,7 +14,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+try:  # Pillow 是可选依赖：没装就退化成文字卡，不能拖垮整个插件加载
+    from PIL import Image, ImageDraw, ImageFont
+
+    PIL_AVAILABLE = True
+except Exception:  # pragma: no cover - 依赖没装上
+    Image = ImageDraw = ImageFont = None  # type: ignore[assignment]
+    PIL_AVAILABLE = False
 
 try:  # 本地单测没有 astrbot
     from astrbot.api import logger
@@ -24,10 +30,12 @@ except Exception:  # pragma: no cover
     logger = logging.getLogger("astrbot_plugin_groupkit")
 
 # Pillow 10+ 推荐 Image.Resampling.LANCZOS，老版本只有 Image.LANCZOS，两个都兜住
-try:
-    RESAMPLE = Image.Resampling.LANCZOS
-except AttributeError:  # pragma: no cover - 老版本 Pillow
-    RESAMPLE = Image.LANCZOS
+RESAMPLE = None
+if PIL_AVAILABLE:
+    try:
+        RESAMPLE = Image.Resampling.LANCZOS
+    except AttributeError:  # pragma: no cover - 老版本 Pillow
+        RESAMPLE = Image.LANCZOS
 
 # QQ 名片里塞满 emoji 是常态，但图片字体画出来是豆腐块，统一清掉
 _EMOJI_RE = re.compile(
@@ -98,6 +106,11 @@ class CardRenderer:
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self._bg_cache: Image.Image | None = None
         self._font_cache: dict[int, Any] = {}
+        if not PIL_AVAILABLE:
+            logger.warning(
+                "[群助手] 未安装 Pillow，信息卡退化为纯文字。"
+                "装上 Pillow 并重启 AstrBot 即可恢复图片（pip install Pillow）"
+            )
 
     # ------------------------------------------------------------ 资源解析
     def _resolve(self, value: str) -> Path | None:
@@ -163,6 +176,9 @@ class CardRenderer:
 
     # ------------------------------------------------------------ 绘制
     def render(self, data: dict[str, Any], avatar_bytes: bytes | None = None) -> Path | None:
+        # 没有 Pillow：返回 None，调用方会自动改用文字卡
+        if not PIL_AVAILABLE:
+            return None
         try:
             image = self._background().convert("RGBA")
             overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))

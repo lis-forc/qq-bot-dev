@@ -48,9 +48,10 @@
     "hint": "0 表示关闭暴击。命中时按下面的暴击额度发放。"
   },
   "draw_bonus_amount": {
-    "description": "暴击时发放的额度",
+    "description": "暴击额外增加的额度",
     "type": "int",
-    "default": 8
+    "default": 8,
+    "hint": "在本次抽到的数值上再加这么多。例如抽到 3 又暴击 → 3 + 8 = 11。"
   },
   "notify_draw_ready": {
     "description": "攒满抽奖机会时在群里提示",
