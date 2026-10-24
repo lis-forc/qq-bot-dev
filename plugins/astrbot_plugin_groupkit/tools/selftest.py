@@ -21,6 +21,13 @@ import time
 import types
 from pathlib import Path
 
+# Pillow 是插件的可选依赖：没装时插件退化成文字卡。
+# 自测里也要能跑 —— 渲染类断言标 SKIP，不能让整个测试脚本崩掉。
+try:
+    from PIL import Image as PILImage
+except ImportError:  # pragma: no cover - 取决于本机环境
+    PILImage = None
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = Path(__file__).resolve().parent / "out"
 TMP = Path(tempfile.mkdtemp(prefix="groupkit_selftest_"))
@@ -139,7 +146,7 @@ def load_plugin():
 
 
 # ---------------------------------------------------------------- 断言小工具
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -148,6 +155,15 @@ def check(name: str, condition: bool, detail: str = "") -> None:
     else:
         FAIL.append(f"{name} {detail}")
         print(f"  [FAIL] {name} {detail}")
+
+
+def check_pil(name: str, condition: bool, detail: str = "") -> None:
+    """依赖 Pillow 的断言。本机没装 Pillow 就记 SKIP，不算失败。"""
+    if PILImage is None:
+        SKIP.append(name)
+        print(f"  [SKIP] {name}（没装 Pillow）")
+        return
+    check(name, condition, detail)
 
 
 def await_perm(perm, event, user_id: str, member) -> int:
@@ -735,7 +751,7 @@ def main() -> None:
             replies.append(reply)
         return replies, ev.calls
 
-    print("\n=== 4.10 禁言：不写时长 / @全体成员 ===")
+    print("\n=== 4.10 禁言：单人 / 全群分开 ===")
     mute_replies, mute_calls = asyncio.run(_say("禁言 @7007", "7007"))
     ban = [p for a, p in mute_calls if a == "set_group_ban"]
     check("不写时长也能禁言", bool(ban), str(mute_calls))
@@ -750,39 +766,49 @@ def main() -> None:
     ban3 = [p for a, p in mute_calls3 if a == "set_group_ban"]
     check("看不懂的时长不瞎禁言", not ban3, str(mute_calls3))
 
-    # @全体成员 走的是 set_group_whole_ban，不是对某个人 set_group_ban。
-    # 这两者搞混会「以为只禁了一个人，其实全群被封」。
-    whole_replies, whole_calls = asyncio.run(_say("禁言 @全体成员", "all", role="owner"))
+    # 全群禁言和单人禁言是两个互不相干的口令：
+    #   「禁言 @某人」只禁这一个人；「全群禁言」才是封整群。
+    # 这里盯死一件事 —— 除了「全群禁言」，任何带「禁言」两个字的说法
+    # 都不许调到 set_group_whole_ban。
+    whole_replies, whole_calls = asyncio.run(_say("全群禁言", None, role="owner"))
     whole = [p for a, p in whole_calls if a == "set_group_whole_ban"]
-    single = [p for a, p in whole_calls if a == "set_group_ban"]
-    check("@全体成员走全群禁言", bool(whole) and whole[0].get("enable") is True, str(whole_calls))
-    check("@全体成员不会误禁单人", not single, str(whole_calls))
-    check("全员禁言有明确提示", any("全群禁言" in str(r) for r in whole_replies), str(whole_replies))
+    check("全群禁言口令走全群禁言", bool(whole) and whole[0].get("enable") is True, str(whole_calls))
+    check("全群禁言不会误禁单人",
+          not [p for a, p in whole_calls if a == "set_group_ban"], str(whole_calls))
 
-    # 管理员只有 3 级，全员禁言要 4 级 —— 必须拦住。
-    denied, denied_calls = asyncio.run(_say("禁言 @全体成员", "all", role="admin"))
+    # 管理员只有 3 级，全群禁言要 4 级 —— 必须拦住。
+    denied, denied_calls = asyncio.run(_say("全群禁言", None, role="admin"))
     check(
-        "3 级不能全员禁言",
+        "3 级不能全群禁言",
         not [p for a, p in denied_calls if a == "set_group_whole_ban"],
         str(denied_calls),
     )
     check("拒绝时说明要群主权限", any("群主" in str(r) for r in denied), str(denied))
 
-    # 有 @ 目标时，参数里出现「全体」绝不能被当成全员禁言。
-    # 判错的话操作者以为只禁了一个人，实际上整个群被封了。
+    # 有人会顺手把「全体」塞进禁言里。这不执行，只把他引到正确口令上。
+    for text, target in (
+        ("禁言 @全体成员", "all"),
+        ("禁言 全体", None),
+        ("禁言 全员", None),
+    ):
+        hint_replies, hint_calls = asyncio.run(_say(text, target, role="owner"))
+        check(
+            f"「{text}」不会封整群",
+            not [p for a, p in hint_calls if a == "set_group_whole_ban"],
+            str(hint_calls),
+        )
+        check(
+            f"「{text}」引导去用全群禁言",
+            any("全群禁言" in str(r) for r in hint_replies),
+            str(hint_replies),
+        )
+
+    # 有 @ 目标时，参数里出现「全体」只影响目标这一次禁言，不能升级成全群。
     _, tricky_calls = asyncio.run(_say("禁言 @7007 全体", "7007", role="owner"))
     check(
-        "带 @目标时「全体」不触发全群禁言",
+        "禁言 @某人 全体 仍只禁这个人",
         not [p for a, p in tricky_calls if a == "set_group_whole_ban"],
         str(tricky_calls),
-    )
-
-    # 「禁言 全体」不 @ 人才是全员禁言
-    _, bare_calls = asyncio.run(_say("禁言 全体", None, role="owner"))
-    check(
-        "只写全体=全员禁言",
-        bool([p for a, p in bare_calls if a == "set_group_whole_ban"]),
-        str(bare_calls),
     )
 
     print("\n=== 4.11 性别：自己改 / 代改 / 非法值 ===")
@@ -849,7 +875,7 @@ def main() -> None:
     data = profiles.card_data(gid2, uid2, pdb.get_member(gid2, uid2), pdb.counts(gid2, uid2))
     check("卡片用真实天数", data["days"] == 30, str(data["days"]))
     path = plugin.ctx.cards.render(data)
-    check("渲染成功", path is not None and Path(path).exists())
+    check_pil("渲染成功", path is not None and Path(path).exists())
     if path:
         target = OUT_DIR / "card_preview.png"
         target.write_bytes(Path(path).read_bytes())
@@ -875,36 +901,40 @@ def main() -> None:
         total=10**9,
     )
     weird_path = plugin.ctx.cards.render(weird)
-    check("极端数据不崩", weird_path is not None and Path(weird_path).exists())
+    check_pil("极端数据不崩", weird_path is not None and Path(weird_path).exists())
 
     # 背景图尺寸不一致时应自动缩放（会走 RESAMPLE 分支，顺带验证 Pillow 兼容性）
-    from PIL import Image as PILImage
-
-    small_bg = TMP / "small_bg.png"
-    PILImage.new("RGB", (600, 340), (255, 230, 240)).save(small_bg)
-    odd_renderer = card_mod.CardRenderer(
-        ROOT, str(small_bg), "assets/fonts/LXGWWenKai-Medium.ttf", OUT_DIR / "tmp_odd_bg"
-    )
-    odd_path = odd_renderer.render(dict(data))
-    check(
-        "背景尺寸不符自动缩放",
-        odd_path is not None and PILImage.open(odd_path).size == (1200, 680),
-        str(PILImage.open(odd_path).size) if odd_path else "渲染失败",
-    )
+    if PILImage is not None:
+        small_bg = TMP / "small_bg.png"
+        PILImage.new("RGB", (600, 340), (255, 230, 240)).save(small_bg)
+        odd_renderer = card_mod.CardRenderer(
+            ROOT, str(small_bg), "assets/fonts/LXGWWenKai-Medium.ttf", OUT_DIR / "tmp_odd_bg"
+        )
+        odd_path = odd_renderer.render(dict(data))
+        check(
+            "背景尺寸不符自动缩放",
+            odd_path is not None and PILImage.open(odd_path).size == (1200, 680),
+            str(PILImage.open(odd_path).size) if odd_path else "渲染失败",
+        )
+    else:
+        check_pil("背景尺寸不符自动缩放", False)
 
     # 头像三种情况：正常、没有（首字占位）、拿到坏数据（解码失败也不能崩）
     import io as _io
 
-    avatar_buf = _io.BytesIO()
-    PILImage.new("RGB", (640, 640), (200, 180, 240)).save(avatar_buf, "PNG")
-    avatar_bytes = avatar_buf.getvalue()
+    if PILImage is not None:
+        avatar_buf = _io.BytesIO()
+        PILImage.new("RGB", (640, 640), (200, 180, 240)).save(avatar_buf, "PNG")
+        avatar_bytes = avatar_buf.getvalue()
+    else:
+        avatar_bytes = b""
 
     with_avatar = plugin.ctx.cards.render(dict(data), avatar_bytes)
-    check("带头像渲染成功", with_avatar is not None and Path(with_avatar).exists())
+    check_pil("带头像渲染成功", with_avatar is not None and Path(with_avatar).exists())
     without_avatar = plugin.ctx.cards.render(dict(data), None)
-    check("无头像走首字占位", without_avatar is not None and Path(without_avatar).exists())
+    check_pil("无头像走首字占位", without_avatar is not None and Path(without_avatar).exists())
     broken_avatar = plugin.ctx.cards.render(dict(data), b"not-an-image")
-    check("头像数据损坏不崩", broken_avatar is not None and Path(broken_avatar).exists())
+    check_pil("头像数据损坏不崩", broken_avatar is not None and Path(broken_avatar).exists())
     check("关闭头像开关时跳过", config_mod.PluginConfig({"card_show_avatar": False}).card_show_avatar is False)
     check("默认开启头像", config_mod.PluginConfig({}).card_show_avatar is True)
     check("默认新人礼 10", config_mod.PluginConfig({}).welcome_quota == 10, str(config_mod.PluginConfig({}).welcome_quota))
@@ -1014,7 +1044,10 @@ def main() -> None:
 
     plugin.ctx.db.close()
 
-    print(f"\n=== 结果：{len(PASS)} 通过 / {len(FAIL)} 失败 ===")
+    skipped = f" / {len(SKIP)} 跳过" if SKIP else ""
+    print(f"\n=== 结果：{len(PASS)} 通过 / {len(FAIL)} 失败{skipped} ===")
+    for item in SKIP:
+        print(f"  SKIP: {item}")
     for item in FAIL:
         print(f"  FAIL: {item}")
     if FAIL:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import AsyncGenerator
 
-from ..core.command import Command, CommandEnv, HelpEntry, exact, prefix, require_level
+from ..core.command import Command, CommandEnv, HelpEntry, exact, prefix
 from ..core.context import PluginContext
 from ..core.services import Permission
 from ..utils import event as ev
@@ -21,45 +21,35 @@ from ..utils import onebot
 from ..utils.router import fmt_duration, parse_duration, parse_int, strip_at
 
 
-# 「禁言 全体」这种不 @ 人也算全员禁言。@全体成员 由 ev.at_all 单独识别。
-WHOLE_BAN_WORDS = {"全体", "全体成员", "全员", "全群", "所有人", "全部"}
+# 这些词出现在「禁言」后面时，说明对方其实想说的是全群禁言。
+# 命中只回一句引导，绝不执行 —— 封整群是不可逆的群体影响，
+# 不能靠一句自然语言猜出来。
+WHOLE_BAN_HINTS = {"全体", "全体成员", "全员", "全群", "所有人", "全部"}
 
 
 def mute_format(ctx: PluginContext) -> str:
     return (
         "格式：禁言 @某人 [时长]\n"
-        f"不写时长默认 {ctx.config.default_mute_minutes} 分钟\n"
-        "（禁言 @全体成员 = 全群禁言）"
+        f"不写时长默认 {ctx.config.default_mute_minutes} 分钟"
     )
 
 
 async def mute(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """禁言 @某人 [时长]；@全体成员 或「禁言 全体」= 全群禁言。
+    """禁言 @某人 [时长]。只禁被 @ 的那一个人。
 
-    两种用法共用一个口令，因为群友在 QQ 里就是习惯 @ 一下再说事。
-    但全员禁言比禁一个人危险得多，所以这里单独再要 4 级权限
-    （命令本身声明的是 2 级）。
+    全群禁言是独立口令「全群禁言」，不跟这里混：一个口令只做一件事，
+    误触的代价才可控。有人顺手打成「禁言 全体」时，这里只做引导。
     """
     arg_text = strip_at(env.args)
     targets = ev.at_targets(env.event, env.sender_id)
 
-    # 全员禁言的两种写法：@全体成员（qq == "all"，会被 at_targets 滤掉），
-    # 或者干脆不 @ 人只写「禁言 全体」。
-    # 注意必须带上 `not targets` 这个条件：否则「禁言 @小明 全体」会被
-    # 当成全员禁言，把整个群封掉 —— 而操作者以为只禁了一个人。
-    if ev.at_all(env.event) or (not targets and arg_text in WHOLE_BAN_WORDS):
-        warn = await require_level(ctx, env, 4)
-        if warn:
+    if not targets:
+        if ev.at_all(env.event) or arg_text in WHOLE_BAN_HINTS:
             yield env.event.plain_result(
-                f"⚠️ 全员禁言需要「{Permission.level_name(4)}」权限\n"
-                f"只禁一个人需要「{Permission.level_name(2)}」权限"
+                "要全群禁言请用「全群禁言」\n"
+                "只禁一个人：禁言 @某人"
             )
             return
-        async for reply in whole_ban(ctx, env, True):
-            yield reply
-        return
-
-    if not targets:
         yield env.event.plain_result(ev.target_hint(env.event, mute_format(ctx)))
         return
 
@@ -247,10 +237,7 @@ COMMANDS = [
         handler=mute,
         level=2,
         perm_short="禁言",
-        help=(
-            HelpEntry("禁言 @某人 [时长]", page="admin", level=2, order=10),
-            HelpEntry("禁言 @全体成员", page="admin", level=4, order=12),
-        ),
+        help=(HelpEntry("禁言 @某人 [时长]", page="admin", level=2, order=10),),
     ),
     Command(
         key="unmute",
