@@ -17,6 +17,9 @@ __pycache__/
 plugins/*/tools/out/
 plugins/*/tools/out
 
+# 本地临时依赖（跑自测用的 Pillow，不进仓库）
+.pylibs/
+
 # 别人插件的原件：只做本地参考，不跟踪、不分发
 待改/
 参考/

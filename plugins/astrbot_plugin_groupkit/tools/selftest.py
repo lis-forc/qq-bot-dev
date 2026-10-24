@@ -411,6 +411,56 @@ def main() -> None:
     check("帮助里没有立名", all("立名" not in body for _, body in pages))
     check("帮助说明授权不看身份", "不看身份" in pages[2][1])
 
+    print("\n=== 4.8 协议端返回值判定（群管假失败）===")
+    onebot = importlib.import_module("gk_plugin.utils.onebot")
+
+    class _Api:
+        def __init__(self, ret):
+            self.ret = ret
+
+        async def call_action(self, action, **params):
+            if isinstance(self.ret, Exception):
+                raise self.ret
+            return self.ret
+
+    class _Ev:  # event 的最小替身
+        def __init__(self, ret):
+            self.bot = types.SimpleNamespace(api=_Api(ret))
+
+    async def _mute(ret) -> bool:
+        return await onebot.mute(_Ev(ret), "1001", "666", 600)
+
+    async def _info(ret):
+        return await onebot.get_member_info(_Ev(ret), "1001", "666")
+
+    quiet = onebot.logger
+    onebot.logger = types.SimpleNamespace(
+        error=lambda *a, **k: None, warning=lambda *a, **k: None, info=lambda *a, **k: None
+    )
+    try:
+        # OneBot 写操作成功时 data 就是 null，拿到的是裸 None。
+        # 老代码用 `result is not None` 判成功，于是每次成功都回一句"失败"。
+        check("禁言成功 data=null 判成功", asyncio.run(_mute(None)) is True)
+        check("禁言成功 空 dict 判成功", asyncio.run(_mute({})) is True)
+        check(
+            "禁言成功 status=ok 判成功",
+            asyncio.run(_mute({"status": "ok", "retcode": 0, "data": None})) is True,
+        )
+        check("禁言失败 status=failed", asyncio.run(_mute({"status": "failed", "retcode": 100})) is False)
+        check("禁言失败 retcode=1", asyncio.run(_mute({"retcode": 1})) is False)
+        check("禁言抛异常 判失败", asyncio.run(_mute(RuntimeError("boom"))) is False)
+        check(
+            "成员信息失败不伪造",
+            asyncio.run(_info({"status": "failed", "retcode": 1, "data": None})) is None,
+        )
+        check(
+            "成员信息 data 解包",
+            asyncio.run(_info({"status": "ok", "retcode": 0, "data": {"role": "admin"}}))
+            == {"role": "admin"},
+        )
+    finally:
+        onebot.logger = quiet
+
     print("\n=== 5. 信息卡渲染 ===")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     data = profiles.card_data(gid2, uid2, pdb.get_member(gid2, uid2), pdb.counts(gid2, uid2))
