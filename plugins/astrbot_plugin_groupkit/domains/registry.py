@@ -37,7 +37,7 @@ def _help_command() -> Command:
 
 # ---------------------------------------------------------------------------
 # 匹配顺序（从上到下，先命中先用）：
-#   信息卡 → 帮助 → 改名 → 爱好 → 额度/抽奖/今日/额度记录
+#   信息卡 → 帮助 → 改名 → 爱好 → 性别 → 额度/抽奖/今日/额度记录
 #   → 全群禁言/全群解禁 → 解禁 → 禁言 → 踢人 → 发额度/扣额度 → 授权
 # ---------------------------------------------------------------------------
 COMMANDS: list[Command] = [
@@ -45,6 +45,7 @@ COMMANDS: list[Command] = [
     _help_command(),          # help
     profile.COMMANDS[1],      # rename
     profile.COMMANDS[2],      # hobby
+    profile.COMMANDS[3],      # sex
     quota.COMMANDS[0],        # 额度
     quota.COMMANDS[1],        # 抽奖
     stats.COMMANDS[0],        # 今日

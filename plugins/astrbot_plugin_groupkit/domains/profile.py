@@ -1,7 +1,7 @@
 """个人信息：信息卡 / 改名 / 爱好。
 
 信息卡是这个插件的门面，所以这里的逻辑比别处保守：
-- 查别人时绝不顺手建档（`i 10001` 这种随手输的号码会污染成员表）；
+- 查别人时绝不顺手建档（`查 10001` 这种随手输的号码会污染成员表）；
 - 画图失败一定要退化成文字卡，不能什么都不回。
 """
 
@@ -19,11 +19,11 @@ from ..core.command import Command, CommandEnv, HelpEntry, Match, custom, prefix
 from ..core.context import PluginContext
 from ..utils import event as ev
 from ..utils import onebot
-from ..utils.router import compact, strip_at
+from ..utils.router import compact, parse_sex, strip_at
 
 
 def info_matcher(ctx: PluginContext, text: str, lower: str) -> Match | None:
-    """`i` / `i @某人` / `i 123456`。
+    """`查` / `查 @某人` / `查 123456`。
 
     触发词来自配置（`info_triggers`），可以随时加别名，所以不用固定前缀匹配。
     """
@@ -31,7 +31,7 @@ def info_matcher(ctx: PluginContext, text: str, lower: str) -> Match | None:
     if lower in triggers:
         return Match()
     for trigger in triggers:
-        found = re.fullmatch(rf"{re.escape(trigger)}\s+(\d{{5,12}})", lower)
+        found = re.fullmatch(rf"{re.escape(trigger)}\s*(\d{{5,12}})", lower)
         if found:
             return Match(args=found.group(1), value=found.group(1))
     return None
@@ -45,7 +45,7 @@ async def card_reply(
     if target_id == sender_id and member:
         target_member = member
     else:
-        # 先只读，绝不顺手建档。否则 `i 10001` 这种随手输的号码会给
+        # 先只读，绝不顺手建档。否则 `查 10001` 这种随手输的号码会给
         # 陌生人凭空写一行 members，永久污染成员表。
         target_member = await asyncio.to_thread(ctx.db.get_member, group_id, target_id)
         if target_member is None:
@@ -119,7 +119,7 @@ def text_card(data: dict) -> str:
 
 # ---------------------------------------------------------------- 口令处理
 async def info(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """信息卡：`i` 看自己，`i @某人` / `i 123456` 看别人。"""
+    """信息卡：`查` 看自己，`查 @某人` / `查 123456` 看别人。"""
     target = env.args or ev.first_at(env.event, env.sender_id) or env.sender_id
     async for reply in card_reply(
         ctx, env.event, env.group_id, env.sender_id, target, env.member
@@ -164,6 +164,36 @@ async def hobby(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
     )
 
 
+async def sex(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
+    """改性别：`性别 男` / `性别 @某人 女`。
+
+    和「改名」同一个套路 —— 改自己 1 级，代改要 2 级。
+    QQ 资料里的性别经常是空的或者乱填的，所以这里允许群友自己覆盖，
+    覆盖之后不会再被协议端同步盖回去。
+    """
+    targets = ev.at_targets(env.event, env.sender_id)
+    if targets:
+        warn = await require_level(ctx, env, 2)
+        if warn:
+            yield env.event.plain_result(warn)
+            return
+        target_id = targets[0]
+    else:
+        target_id = env.sender_id
+
+    value = parse_sex(strip_at(env.args))
+    if value is None:
+        yield env.event.plain_result(
+            "格式：性别 男\n"
+            "可选：男 / 女 / 保密\n"
+            "（代改：性别 @某人 女）"
+        )
+        return
+    yield env.event.plain_result(
+        await asyncio.to_thread(ctx.profiles.set_sex, env.group_id, target_id, value)
+    )
+
+
 # ---------------------------------------------------------------- 命令定义
 COMMANDS = [
     Command(
@@ -172,8 +202,8 @@ COMMANDS = [
         handler=info,
         perm_short="信息卡",
         help=(
-            HelpEntry("i", "个人信息卡（图片）", page="base", order=10),
-            HelpEntry("i @某人  /  i QQ号", "看别人的", page="base", order=11),
+            HelpEntry("查", "个人信息卡（图片）", page="base", order=10),
+            HelpEntry("查 @某人  /  查 QQ号", "看别人的", page="base", order=11),
         ),
     ),
     Command(
@@ -194,5 +224,18 @@ COMMANDS = [
         matcher=prefix(("爱好", "设置爱好")),
         handler=hobby,
         help=(HelpEntry("爱好 打游戏", "设置信息卡上的爱好", page="base", order=30),),
+    ),
+    Command(
+        key="sex",
+        matcher=prefix(("性别", "设置性别", "改性别")),
+        handler=sex,
+        perm_short="性别",
+        perm_extra=((2, "代改性别"),),
+        help=(
+            HelpEntry(
+                "性别 男", "改信息卡上的性别（男 / 女 / 保密）", page="base", order=35
+            ),
+            HelpEntry("性别 @某人 女", page="admin", level=2, order=31),
+        ),
     ),
 ]

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import AsyncGenerator
 
-from ..core.command import Command, CommandEnv, HelpEntry, exact, prefix
+from ..core.command import Command, CommandEnv, HelpEntry, exact, prefix, require_level
 from ..core.context import PluginContext
 from ..core.services import Permission
 from ..utils import event as ev
@@ -21,16 +21,58 @@ from ..utils import onebot
 from ..utils.router import fmt_duration, parse_duration, parse_int, strip_at
 
 
+# 「禁言 全体」这种不 @ 人也算全员禁言。@全体成员 由 ev.at_all 单独识别。
+WHOLE_BAN_WORDS = {"全体", "全体成员", "全员", "全群", "所有人", "全部"}
+
+
+def mute_format(ctx: PluginContext) -> str:
+    return (
+        "格式：禁言 @某人 [时长]\n"
+        f"不写时长默认 {ctx.config.default_mute_minutes} 分钟\n"
+        "（禁言 @全体成员 = 全群禁言）"
+    )
+
+
 async def mute(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """禁言 @某人 [时长]。"""
+    """禁言 @某人 [时长]；@全体成员 或「禁言 全体」= 全群禁言。
+
+    两种用法共用一个口令，因为群友在 QQ 里就是习惯 @ 一下再说事。
+    但全员禁言比禁一个人危险得多，所以这里单独再要 4 级权限
+    （命令本身声明的是 2 级）。
+    """
+    arg_text = strip_at(env.args)
     targets = ev.at_targets(env.event, env.sender_id)
+
+    # 全员禁言的两种写法：@全体成员（qq == "all"，会被 at_targets 滤掉），
+    # 或者干脆不 @ 人只写「禁言 全体」。
+    # 注意必须带上 `not targets` 这个条件：否则「禁言 @小明 全体」会被
+    # 当成全员禁言，把整个群封掉 —— 而操作者以为只禁了一个人。
+    if ev.at_all(env.event) or (not targets and arg_text in WHOLE_BAN_WORDS):
+        warn = await require_level(ctx, env, 4)
+        if warn:
+            yield env.event.plain_result(
+                f"⚠️ 全员禁言需要「{Permission.level_name(4)}」权限\n"
+                f"只禁一个人需要「{Permission.level_name(2)}」权限"
+            )
+            return
+        async for reply in whole_ban(ctx, env, True):
+            yield reply
+        return
+
     if not targets:
-        yield env.event.plain_result(ev.target_hint(env.event, "格式：禁言 @某人 10分钟"))
+        yield env.event.plain_result(ev.target_hint(env.event, mute_format(ctx)))
         return
-    seconds = parse_duration(strip_at(env.args))
-    if seconds is None:
-        yield env.event.plain_result("⚠️ 没看懂时长\n格式：禁言 @某人 10分钟")
-        return
+
+    # 不写时长就用配置的默认值。QQ 里「禁言他」是最常见的说法，
+    # 每次都得打「10分钟」纯属多余。
+    if arg_text:
+        seconds = parse_duration(arg_text)
+        if seconds is None:
+            yield env.event.plain_result(f"⚠️ 没看懂时长：{arg_text}\n{mute_format(ctx)}")
+            return
+    else:
+        seconds = ctx.config.default_mute_minutes * 60
+
     if seconds == 0:
         yield env.event.plain_result("⚠️ 0 分钟就是没禁言，要解禁请用「解禁 @某人」")
         return
@@ -205,7 +247,10 @@ COMMANDS = [
         handler=mute,
         level=2,
         perm_short="禁言",
-        help=(HelpEntry("禁言 @某人 10分钟", page="admin", level=2, order=10),),
+        help=(
+            HelpEntry("禁言 @某人 [时长]", page="admin", level=2, order=10),
+            HelpEntry("禁言 @全体成员", page="admin", level=4, order=12),
+        ),
     ),
     Command(
         key="unmute",

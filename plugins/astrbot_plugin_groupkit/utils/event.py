@@ -57,6 +57,30 @@ def first_at(event, sender_id: str) -> str | None:
     return targets[0] if targets else None
 
 
+def at_all(event) -> bool:
+    """消息里有没有 @全体成员。
+
+    `get_at_targets` 会刻意过滤掉它（qq == "all" 不是数字），因为那个函数
+    只服务于「对某个人执行操作」。但「禁言 @全体成员」是个正当用法，
+    而且比单人禁言危险得多，所以要单独识别出来走 4 级校验。
+
+    OneBot 里 @全体成员 的 qq 是字符串 "all"；AstrBot 的 message_str
+    里则通常渲染成「@全体成员」，兜底也认这个。
+    """
+    message_obj = getattr(event, "message_obj", None)
+    for comp in getattr(message_obj, "message", None) or []:
+        if onebot.At is not None and isinstance(comp, onebot.At):
+            target = getattr(comp, "qq", None) or getattr(comp, "user_id", None)
+            if str(target or "") == "all":
+                return True
+            continue
+        if str(getattr(comp, "type", "")).lower() == "at":
+            target = getattr(comp, "qq", None) or getattr(comp, "user_id", None)
+            if str(target or "") == "all":
+                return True
+    return "全体成员" in str(getattr(event, "message_str", "") or "")
+
+
 def target_hint(event, fmt: str) -> str:
     """没解析出操作目标时，给出准确原因。
 

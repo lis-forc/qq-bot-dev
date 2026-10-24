@@ -305,6 +305,19 @@ class Database:
             )
         return self.get_member(group_id, user_id) or {}
 
+    def set_sex(self, group_id: str, user_id: str, sex: str) -> dict[str, Any]:
+        """手动设置性别。
+
+        写进去之后 `refresh_from_qq` 就不会再从协议端覆盖它 —— 那边只在
+        sex 为空时才补全，所以「群友自己改了性别」的优先级天然高于 QQ 资料。
+        """
+        with self._tx():
+            self.conn.execute(
+                "UPDATE members SET sex = ?, updated_at = ? WHERE group_id = ? AND user_id = ?",
+                (sex, _now(), group_id, user_id),
+            )
+        return self.get_member(group_id, user_id) or {}
+
     def set_permission(self, group_id: str, user_id: str, level: int | None) -> None:
         with self._tx():
             self.conn.execute(

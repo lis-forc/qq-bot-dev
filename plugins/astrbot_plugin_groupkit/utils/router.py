@@ -101,3 +101,23 @@ def validate_hobby(hobby: str) -> tuple[bool, str]:
     if len(cleaned) > MAX_HOBBY_LEN:
         return False, f"爱好请控制在 {MAX_HOBBY_LEN} 个字以内。"
     return True, ""
+
+
+# 性别只存这三种。存中文而不是 OneBot 的 male/female，是因为
+# 库里的 sex 既可能是协议端同步的、也可能是群友手改的，统一成一种写法
+# 才不会出现「一半 male 一半 男」，展示时还得猜。
+SEX_CHOICES = ("男", "女", "保密")
+
+_SEX_ALIASES = {
+    "男": "男", "男生": "男", "男的": "男", "男性": "男", "♂": "男",
+    "male": "男", "m": "男", "man": "男", "1": "男",
+    "女": "女", "女生": "女", "女的": "女", "女性": "女", "♀": "女",
+    "female": "女", "f": "女", "woman": "女", "2": "女",
+    "保密": "保密", "未知": "保密", "不说": "保密", "隐藏": "保密", "不告诉你": "保密",
+    "unknown": "保密", "secret": "保密", "0": "保密",
+}
+
+
+def parse_sex(text: str | None) -> str | None:
+    """把「男 / 女 / 保密」及其常见写法归一成三选一。看不懂返回 None。"""
+    return _SEX_ALIASES.get(compact(text).lower())

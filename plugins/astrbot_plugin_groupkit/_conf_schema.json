@@ -13,7 +13,7 @@
   "welcome_quota": {
     "description": "新人礼额度",
     "type": "int",
-    "default": 5,
+    "default": 10,
     "slider": { "min": 0, "max": 200, "step": 1 },
     "hint": "成员第一次发言时自动到账，只发一次。设为 0 表示不发。"
   },
@@ -64,6 +64,13 @@
     "type": "bool",
     "default": false
   },
+  "default_mute_minutes": {
+    "description": "禁言默认时长（分钟）",
+    "type": "int",
+    "default": 10,
+    "slider": { "min": 1, "max": 1440, "step": 1 },
+    "hint": "「禁言 @某人」不写时长时用这个值。写「禁言 @某人 1小时」仍然按写的算。上限 30 天。"
+  },
   "log_retention_days": {
     "description": "额度流水与操作日志保留天数",
     "type": "int",
@@ -81,8 +88,8 @@
   "info_triggers": {
     "description": "个人信息卡触发词",
     "type": "string",
-    "default": "i,我的信息,名片",
-    "hint": "英文逗号分隔。通常是单个字母，例如 i。"
+    "default": "查,我的信息,名片",
+    "hint": "英文逗号分隔。默认「查」；想用单个字母也可以填 i。"
   },
   "help_style": {
     "description": "帮助菜单发送方式",

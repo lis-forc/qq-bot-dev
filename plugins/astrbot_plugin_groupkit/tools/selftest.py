@@ -190,6 +190,13 @@ def main() -> None:
     check("显示名 超长拒绝", not router.validate_display_name("一" * 13)[0])
     check("显示名 空拒绝", not router.validate_display_name("   ")[0])
     check("爱好 超长拒绝", not router.validate_hobby("爱" * 13)[0])
+    check("性别 男", router.parse_sex("男") == "男")
+    check("性别 女生", router.parse_sex("女生") == "女")
+    check("性别 female", router.parse_sex("Female") == "女")
+    check("性别 保密", router.parse_sex("保密") == "保密")
+    check("性别 未知→保密", router.parse_sex("未知") == "保密")
+    check("性别 看不懂", router.parse_sex("外星人") is None)
+    check("性别 空", router.parse_sex("  ") is None)
 
     print("\n=== 2. 配置兜底 ===")
     cfg = config_mod.PluginConfig({})
@@ -199,10 +206,17 @@ def main() -> None:
         "上限低于下限自动纠正",
         config_mod.PluginConfig({"draw_min": 9, "draw_max": 3}).draw_max == 9,
     )
-    check("触发词默认", cfg.info_triggers == {"i", "我的信息", "名片"})
+    check("触发词默认", cfg.info_triggers == {"查", "我的信息", "名片"})
     check(
         "触发词自定义",
         config_mod.PluginConfig({"info_triggers": "I，名片"}).info_triggers == {"i", "名片"},
+    )
+    # 老版本默认值是 i,我的信息,名片。服务器上那份配置没人会去手动改，
+    # 所以必须自动跟着新默认走，否则「代码改成查了，群里还得发 i」。
+    check(
+        "老默认触发词自动迁移到查",
+        config_mod.PluginConfig({"info_triggers": "i,我的信息,名片"}).info_triggers
+        == {"查", "我的信息", "名片"},
     )
     check("群白名单留空=全开", cfg.is_group_enabled("123"))
     check(
@@ -395,7 +409,7 @@ def main() -> None:
             "welcome_quota": 20,
             "rename_cost": 10,
             "draw_per": 3,
-            "info_triggers": "i",
+            "info_triggers": "查",
             "enabled_group_ids": ["1001"],
         },
     )
@@ -487,9 +501,22 @@ def main() -> None:
         pdb.bump_message("1001", "6006", 3)
 
     print("\n--- 抽奖 ---")
-    draw_text = plugin.ctx.quota.draw("1001", "6006")
+    # 攒够 2 次机会，才能验证「还剩 1 次」和「最后一次」两种文案。
+    pdb.ensure_member("1001", "7009", welcome_quota=0)
+    for _ in range(6):
+        pdb.bump_message("1001", "7009", 3)
+    draw_text = plugin.ctx.quota.draw("1001", "7009")
     print(draw_text)
     check("抽奖有结果", "获得额度" in draw_text, draw_text.replace("\n", " | "))
+    check("抽奖提示还剩几次", "还剩 1 次机会" in draw_text, draw_text.replace("\n", " | "))
+
+    last_text = plugin.ctx.quota.draw("1001", "7009")
+    check("最后一次提示机会用完", "机会用完了" in last_text, last_text.replace("\n", " | "))
+
+    none_text = plugin.ctx.quota.draw("1001", "7009")
+    print(none_text)
+    check("没机会时明确说没有", "没有抽奖机会了" in none_text, none_text.replace("\n", " | "))
+    check("没机会时给出还差几条", "再发" in none_text, none_text.replace("\n", " | "))
 
     print("\n--- 额度 ---")
     quota_text = plugin.ctx.quota.render("1001", "6006", pdb.get_member("1001", "6006"))
@@ -527,7 +554,7 @@ def main() -> None:
     class _CardEvent:
         """只够 _card_reply 用的最小 event。"""
 
-        message_str = "i 10001"
+        message_str = "查 10001"
 
         def __init__(self):
             self.bot = types.SimpleNamespace(api=_MissingApi())
@@ -627,20 +654,21 @@ def main() -> None:
     class _KickApi:
         """记录所有 call_action，用来断言参数真的传到了协议端。"""
 
-        def __init__(self):
+        def __init__(self, role: str = "admin"):
+            self.role = role
             self.calls: list[tuple[str, dict]] = []
 
         async def call_action(self, action, **params):
             self.calls.append((action, params))
             if action == "get_group_member_info":
-                return {"data": {"user_id": str(params.get("user_id")), "role": "admin"}}
+                return {"data": {"user_id": str(params.get("user_id")), "role": self.role}}
             return None
 
     class _KickEvent:
-        def __init__(self, target: str):
-            self.bot = types.SimpleNamespace(api=_KickApi())
+        def __init__(self, target: str | None = None, role: str = "admin"):
+            self.bot = types.SimpleNamespace(api=_KickApi(role))
             self.message_obj = types.SimpleNamespace(
-                message=[router_at(target)], raw_message={}
+                message=[router_at(target)] if target else [], raw_message={}
             )
             self.calls = self.bot.api.calls
 
@@ -691,6 +719,130 @@ def main() -> None:
     check("拉黑真的传给协议端", black_kick and black_kick[0].get("reject_add_request") is True,
           str(black_kick))
     check("拉黑提示说明后果", any("不能再申请" in str(r) for r in kick_calls2), str(kick_calls2))
+
+    async def _say(text: str, target: str | None = None, role: str = "admin"):
+        """把一句话真的喂给分发器，返回 (回复列表, 协议端调用记录)。"""
+        ev = _KickEvent(target, role)
+        replies = []
+        env = command_mod.CommandEnv(
+            event=ev,
+            group_id="1001",
+            sender_id="6006",
+            member=pdb.get_member("1001", "6006"),
+            text=text,
+        )
+        async for reply in registry_mod.dispatch(plugin.ctx, env):
+            replies.append(reply)
+        return replies, ev.calls
+
+    print("\n=== 4.10 禁言：不写时长 / @全体成员 ===")
+    mute_replies, mute_calls = asyncio.run(_say("禁言 @7007", "7007"))
+    ban = [p for a, p in mute_calls if a == "set_group_ban"]
+    check("不写时长也能禁言", bool(ban), str(mute_calls))
+    check("不写时长用默认 10 分钟", ban and ban[0].get("duration") == 600, str(ban))
+    check("禁言提示带上时长", any("10 分钟" in str(r) for r in mute_replies), str(mute_replies))
+
+    _, mute_calls2 = asyncio.run(_say("禁言 @7007 5分钟", "7007"))
+    ban2 = [p for a, p in mute_calls2 if a == "set_group_ban"]
+    check("写了时长按写的算", ban2 and ban2[0].get("duration") == 300, str(ban2))
+
+    _, mute_calls3 = asyncio.run(_say("禁言 @7007 瞎写", "7007"))
+    ban3 = [p for a, p in mute_calls3 if a == "set_group_ban"]
+    check("看不懂的时长不瞎禁言", not ban3, str(mute_calls3))
+
+    # @全体成员 走的是 set_group_whole_ban，不是对某个人 set_group_ban。
+    # 这两者搞混会「以为只禁了一个人，其实全群被封」。
+    whole_replies, whole_calls = asyncio.run(_say("禁言 @全体成员", "all", role="owner"))
+    whole = [p for a, p in whole_calls if a == "set_group_whole_ban"]
+    single = [p for a, p in whole_calls if a == "set_group_ban"]
+    check("@全体成员走全群禁言", bool(whole) and whole[0].get("enable") is True, str(whole_calls))
+    check("@全体成员不会误禁单人", not single, str(whole_calls))
+    check("全员禁言有明确提示", any("全群禁言" in str(r) for r in whole_replies), str(whole_replies))
+
+    # 管理员只有 3 级，全员禁言要 4 级 —— 必须拦住。
+    denied, denied_calls = asyncio.run(_say("禁言 @全体成员", "all", role="admin"))
+    check(
+        "3 级不能全员禁言",
+        not [p for a, p in denied_calls if a == "set_group_whole_ban"],
+        str(denied_calls),
+    )
+    check("拒绝时说明要群主权限", any("群主" in str(r) for r in denied), str(denied))
+
+    # 有 @ 目标时，参数里出现「全体」绝不能被当成全员禁言。
+    # 判错的话操作者以为只禁了一个人，实际上整个群被封了。
+    _, tricky_calls = asyncio.run(_say("禁言 @7007 全体", "7007", role="owner"))
+    check(
+        "带 @目标时「全体」不触发全群禁言",
+        not [p for a, p in tricky_calls if a == "set_group_whole_ban"],
+        str(tricky_calls),
+    )
+
+    # 「禁言 全体」不 @ 人才是全员禁言
+    _, bare_calls = asyncio.run(_say("禁言 全体", None, role="owner"))
+    check(
+        "只写全体=全员禁言",
+        bool([p for a, p in bare_calls if a == "set_group_whole_ban"]),
+        str(bare_calls),
+    )
+
+    print("\n=== 4.11 性别：自己改 / 代改 / 非法值 ===")
+    sex_replies, _ = asyncio.run(_say("性别 男"))
+    check("改性别成功", any("性别已更新" in str(r) for r in sex_replies), str(sex_replies))
+    check("库里存的是男", (pdb.get_member("1001", "6006") or {}).get("sex") == "男",
+          str(pdb.get_member("1001", "6006")))
+
+    async def _sex_other(text: str):
+        return await _say(text, "7007")
+
+    asyncio.run(_sex_other("性别 @7007 女"))
+    check("代改性别生效", (pdb.get_member("1001", "7007") or {}).get("sex") == "女",
+          str(pdb.get_member("1001", "7007")))
+
+    bad_replies, _ = asyncio.run(_say("性别 外星人"))
+    check("非法性别不写入", any("格式：性别 男" in str(r) for r in bad_replies), str(bad_replies))
+    check(
+        "非法性别保留原值",
+        (pdb.get_member("1001", "6006") or {}).get("sex") == "男",
+        str(pdb.get_member("1001", "6006")),
+    )
+
+    # 手动改过的性别，不能被协议端的 QQ 资料盖回去。
+    # 这个坑很隐蔽：need 是「join_time / qq_name / sex 任一缺失」就查协议端，
+    # 所以一个刚改完性别、但还没同步过入群时间的人，下一次查卡就会被冲掉。
+    class _SexApi(_KickApi):
+        async def call_action(self, action, **params):
+            self.calls.append((action, params))
+            if action == "get_group_member_info":
+                return {
+                    "data": {
+                        "user_id": str(params.get("user_id")),
+                        "role": "admin",
+                        "sex": "male",
+                        "join_time": 1_700_000_000,
+                        "nickname": "小明",
+                    }
+                }
+            return None
+
+    class _SexEvent:
+        def __init__(self):
+            self.bot = types.SimpleNamespace(api=_SexApi())
+            self.message_obj = types.SimpleNamespace(message=[], raw_message={})
+
+        def get_self_id(self):
+            return "999999"
+
+    manual_member = pdb.get_member("1001", "7007") or {}
+    check("测试前置：7007 手动设过女", manual_member.get("sex") == "女", str(manual_member))
+
+    async def _refresh():
+        return await plugin.ctx.profiles.refresh_from_qq(
+            _SexEvent(), "1001", "7007", manual_member
+        )
+
+    refreshed = asyncio.run(_refresh())
+    check("手动性别不被协议端覆盖", refreshed.get("sex") == "女", str(refreshed))
+    check("入群时间仍然同步进来", refreshed.get("join_time") == 1_700_000_000, str(refreshed))
 
     print("\n=== 5. 信息卡渲染 ===")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -755,8 +907,14 @@ def main() -> None:
     check("头像数据损坏不崩", broken_avatar is not None and Path(broken_avatar).exists())
     check("关闭头像开关时跳过", config_mod.PluginConfig({"card_show_avatar": False}).card_show_avatar is False)
     check("默认开启头像", config_mod.PluginConfig({}).card_show_avatar is True)
-    check("默认新人礼 5", config_mod.PluginConfig({}).welcome_quota == 5)
+    check("默认新人礼 10", config_mod.PluginConfig({}).welcome_quota == 10, str(config_mod.PluginConfig({}).welcome_quota))
     check("默认改名 1", config_mod.PluginConfig({}).rename_cost == 1)
+    check("默认禁言 10 分钟", config_mod.PluginConfig({}).default_mute_minutes == 10)
+    check(
+        "禁言时长可配且收敛",
+        config_mod.PluginConfig({"default_mute_minutes": 0}).default_mute_minutes == 1
+        and config_mod.PluginConfig({"default_mute_minutes": 999999}).default_mute_minutes == 43200,
+    )
 
     print("\n=== 6. 命令注册表（后续加功能的地基）===")
     cmd_list = registry_mod.COMMANDS

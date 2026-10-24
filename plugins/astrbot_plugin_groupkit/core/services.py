@@ -200,7 +200,11 @@ class ProfileService:
             join_ts = None
 
         raw_sex = str(info.get("sex") or "")
-        sex = SEX_MAP.get(raw_sex, "保密") if raw_sex else None
+        # 群友自己用「性别」改过的值优先。need 是按多个字段一起判断的，
+        # 所以很可能因为 join_time 还缺就来查一次协议端 —— 那时如果无脑写
+        # sex，手动改的性别就被 QQ 资料冲掉了，而且悄无声息。
+        manual_sex = str((member or {}).get("sex") or "")
+        sex = None if manual_sex else (SEX_MAP.get(raw_sex, "保密") if raw_sex else None)
         qq_name = str(info.get("card") or info.get("nickname") or "").strip() or None
 
         return self.db.set_join_info(
@@ -249,6 +253,12 @@ class ProfileService:
         self.db.ensure_member(group_id, user_id)
         self.db.set_hobby(group_id, user_id, hobby)
         return f"✅ 爱好已更新\n{hobby}"
+
+    def set_sex(self, group_id: str, user_id: str, sex: str) -> str:
+        """改信息卡上的性别。sex 已经由 router.parse_sex 归一过。"""
+        self.db.ensure_member(group_id, user_id)
+        updated = self.db.set_sex(group_id, user_id, sex)
+        return f"✅ 性别已更新\n{self.sex(updated)}"
 
     # ---------------------------------------------------------- 信息卡数据
     def card_data(
@@ -354,15 +364,17 @@ class QuotaService:
         return "\n".join(lines)
 
     def draw(self, group_id: str, user_id: str) -> str:
+        """抽一次。先扣机会再结算，所以出错也不会多抽。"""
         ok, remaining = self.db.consume_draw(group_id, user_id)
+        cur = self.config.currency_name
         if not ok:
             member = self.db.get_member(group_id, user_id) or {}
             progress = int(member.get("msg_progress") or 0)
             need = max(0, self.config.draw_per - progress)
             return (
-                "⚠️ 还没有抽奖次数\n"
+                "🎟 没有抽奖机会了\n"
                 f"抽奖进度：{progress} / {self.config.draw_per}\n"
-                f"再发 {need} 条就能抽一次"
+                f"再发 {need} 条就能再抽一次"
             )
 
         amount = random.randint(self.config.draw_min, self.config.draw_max)
@@ -376,7 +388,13 @@ class QuotaService:
         )
 
         lines = [f"🎲 抽奖结果{' · 暴击！' if crit else ''}"]
-        lines.append(f"获得{self.config.currency_name}：+{amount}")
-        lines.append(f"当前{self.config.currency_name}：{balance}")
-        lines.append(f"剩余抽奖次数：{remaining}")
+        lines.append(f"获得{cur}：+{amount}")
+        lines.append(f"当前{cur}：{balance}")
+        # 剩下的机会放在最后一行，回答「我还能抽几次」这个必然会问的问题。
+        if remaining > 0:
+            lines.append(f"还剩 {remaining} 次机会")
+        else:
+            member = self.db.get_member(group_id, user_id) or {}
+            progress = int(member.get("msg_progress") or 0)
+            lines.append(f"机会用完了 · 再发 {self.config.draw_per - progress} 条可再抽")
         return "\n".join(lines)

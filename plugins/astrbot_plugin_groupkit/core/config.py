@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-DEFAULT_INFO_TRIGGERS = ("i", "我的信息", "名片")
+DEFAULT_INFO_TRIGGERS = ("查", "我的信息", "名片")
+
+# 老版本的默认触发词。升级到「查」之后，如果服务器上存的还是这一串原封不动的
+# 默认值，就当作用户没改过、直接换成新默认 —— 否则会出现「代码改成查了，
+# 群里还得发 i」的怪事，而 WebUI 里那串配置没人会想起来去改。
+LEGACY_INFO_TRIGGERS = {"i", "我的信息", "名片"}
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -68,7 +73,8 @@ class PluginConfig:
     # ---------- 额度 ----------
     @property
     def welcome_quota(self) -> int:
-        return max(0, _as_int(self.raw.get("welcome_quota"), 5))
+        """新人礼。第一次在本群发言时到账，只发一次。"""
+        return max(0, _as_int(self.raw.get("welcome_quota"), 10))
 
     @property
     def rename_cost(self) -> int:
@@ -103,14 +109,28 @@ class PluginConfig:
         # 想要热闹的群自己开。
         return bool(self.raw.get("notify_draw_ready", False))
 
+    # ---------- 群管 ----------
+    @property
+    def default_mute_minutes(self) -> int:
+        """禁言不写时长时用多少分钟。
+
+        QQ 里「禁言他一下」是最常见的说法，逼着写「10分钟」纯属多余。
+        上限 43200 分钟 = 30 天，再长协议端会拒绝。
+        """
+        return min(43200, max(1, _as_int(self.raw.get("default_mute_minutes"), 10)))
+
     # ---------- 交互 ----------
     @property
     def info_triggers(self) -> set[str]:
         raw = self.raw.get("info_triggers")
-        if raw is None or str(raw).strip() == "":
+        text = "" if raw is None else str(raw).strip()
+        if not text:
             return set(DEFAULT_INFO_TRIGGERS)
-        items = {item.strip().lower() for item in str(raw).replace("，", ",").split(",")}
+        items = {item.strip().lower() for item in text.replace("，", ",").split(",")}
         items.discard("")
+        # 还没被改过、仍是老默认值 → 跟着新默认走（i → 查）
+        if items and items == LEGACY_INFO_TRIGGERS:
+            return set(DEFAULT_INFO_TRIGGERS)
         return items or set(DEFAULT_INFO_TRIGGERS)
 
     @property

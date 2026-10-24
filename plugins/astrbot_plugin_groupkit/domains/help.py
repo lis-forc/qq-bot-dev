@@ -40,10 +40,13 @@ PERM_FOOTER = (
     "授权不看身份，只看等级：任何被授到 4 级的人都能继续授权别人。"
 )
 
-ADMIN_FOOTER = (
-    "禁言默认单位是分钟，最长 30 天。\n"
-    "踢人加「拉黑」，对方就不能再申请入群。"
-)
+def _admin_footer(ctx: PluginContext) -> str:
+    """管理页脚注。带配置值的写成函数，配置一改菜单跟着变。"""
+    return (
+        f"禁言默认单位是分钟，最长 30 天；不写时长默认 {ctx.config.default_mute_minutes} 分钟。\n"
+        "禁言 @全体成员 等于全群禁言，需要群主权限。\n"
+        "踢人加「拉黑」，对方就不能再申请入群。"
+    )
 
 
 def _tokens(ctx: PluginContext) -> dict[str, Any]:
@@ -119,7 +122,7 @@ def _admin_page(ctx: PluginContext, tokens: dict[str, Any]) -> str:
             continue
         chunks.append(f"【{level} 级 · {Permission.level_name(level)}】\n{usages}")
     body = "\n\n".join(chunks)
-    return f"🛡 群助手 · 管理\n\n{body}\n\n{ADMIN_FOOTER}"
+    return f"🛡 群助手 · 管理\n\n{body}\n\n{_admin_footer(ctx)}"
 
 
 def _perm_page(ctx: PluginContext) -> str:
