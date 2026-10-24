@@ -35,6 +35,19 @@ from .utils.router import compact, drop_prefix, parse_duration, parse_int, strip
 
 PLUGIN_NAME = "astrbot_plugin_groupkit"
 
+# 「踢 @某人 拉黑」里的拉黑后缀。命中任意一个就走 reject_add_request。
+# 只做包含匹配，位置随意：拉黑可以写在 @ 前面也可以写在后面。
+KICK_REJECT_WORDS = ("拉黑", "拒收", "拒绝", "黑名单")
+
+
+def parse_kick_reject(args: str) -> bool:
+    """踢人参数里有没有「拉黑」。
+
+    抽成函数只为了能单测：这是「他还能不能再进来」的分叉，
+    判错了不会报错，只会在几天后有人重新申请入群时才发现。
+    """
+    return any(word in (args or "") for word in KICK_REJECT_WORDS)
+
 
 def _raw_get(raw: Any, key: str, default: Any = None) -> Any:
     """OneBot 的 raw_message 是平铺 dict；兼容一下对象形态。"""
@@ -125,6 +138,9 @@ class GroupKit(Star):
             )
             if any(removed.values()):
                 logger.info(f"[群助手] 按保留期清理旧数据：{removed}")
+            # 裁剪之后顺便让 SQLite 刷新查询计划统计。
+            # 放在这里而不是每条消息后跑：一天一次就够，也不会挡在群消息的路径上。
+            await asyncio.to_thread(self.db.optimize)
         except Exception as exc:
             logger.error(f"[群助手] 清理旧数据失败: {exc}", exc_info=True)
 
@@ -216,6 +232,10 @@ class GroupKit(Star):
             yield event.plain_result(await self._cmd_stats(group_id, sender_id, member))
             return
 
+        if text in {"额度记录", "额度流水", "流水", "我的额度记录"}:
+            yield event.plain_result(await self._cmd_quota_history(group_id, sender_id))
+            return
+
         # ---------- 群管（顺序：全群类必须在「禁言/解禁」前面） ----------
         if text in {"全群禁言", "全体禁言", "禁言全体", "全员禁言"}:
             async for reply in self._cmd_whole_ban(event, group_id, sender_id, member, True):
@@ -238,8 +258,9 @@ class GroupKit(Star):
                 yield reply
             return
 
-        if drop_prefix(text, ("踢", "踢人", "踢出", "移出")) is not None:
-            async for reply in self._cmd_kick(event, group_id, sender_id, member):
+        args = drop_prefix(text, ("踢", "踢人", "踢出", "移出"))
+        if args is not None:
+            async for reply in self._cmd_kick(event, group_id, sender_id, member, args):
                 yield reply
             return
 
@@ -299,6 +320,9 @@ class GroupKit(Star):
 
     async def _cmd_stats(self, group_id: str, sender_id: str, member) -> str:
         return await asyncio.to_thread(self.stats.render, group_id, sender_id, member)
+
+    async def _cmd_quota_history(self, group_id: str, sender_id: str) -> str:
+        return await asyncio.to_thread(self.quota.render_history, group_id, sender_id)
 
     # ================================================================= 信息卡
     async def _card_reply(
@@ -391,6 +415,8 @@ class GroupKit(Star):
             f"  设置信息卡上的爱好\n\n"
             f"{cur} / 抽奖 / 今日\n"
             f"  余额、抽奖机会、发言统计\n\n"
+            f"额度记录\n"
+            f"  最近 5 笔变动\n\n"
             f"帮助\n"
             f"  本菜单\n\n"
             f"新手礼：首次发言自动到账 {self.config.welcome_quota} {cur}；"
@@ -403,18 +429,19 @@ class GroupKit(Star):
             "解禁 @某人\n"
             "改名 @某人 李四\n\n"
             "【3 级 · 管理】\n"
-            "踢 @某人\n"
+            "踢 @某人 [拉黑]\n"
             "发额度 @某人 50\n"
             "扣额度 @某人 50\n\n"
             "【4 级 · 群主】\n"
             "全群禁言 / 全群解禁\n"
             "授权 @某人 3\n\n"
-            "禁言默认单位是分钟，最长 30 天。"
+            "禁言默认单位是分钟，最长 30 天。\n"
+            "踢人加「拉黑」，对方就不能再申请入群。"
         )
         page3 = (
             "📖 群助手 · 权限\n\n"
             f"1 {Permission.level_name(1)}\n"
-            "  信息卡 / 额度 / 抽奖 / 今日 / 改自己显示名\n\n"
+            "  信息卡 / 额度 / 抽奖 / 今日 / 额度记录 / 改名\n\n"
             f"2 {Permission.level_name(2)}\n"
             "  禁言 / 解禁 / 代改名\n\n"
             f"3 {Permission.level_name(3)}\n"
@@ -501,14 +528,16 @@ class GroupKit(Star):
             await asyncio.to_thread(self.db.log_op, group_id, sender_id, "解禁", targets[0])
         yield event.plain_result("🔊 已解除禁言" if done else "⚠️ 解禁失败，检查机器人权限")
 
-    async def _cmd_kick(self, event, group_id: str, sender_id: str, member) -> AsyncGenerator:
+    async def _cmd_kick(
+        self, event, group_id: str, sender_id: str, member, args: str = ""
+    ) -> AsyncGenerator:
         ok, _ = await self.permission.require(event, group_id, sender_id, member, 3)
         if not ok:
             yield event.plain_result(f"⚠️ 需要「{Permission.level_name(3)}」权限")
             return
         targets = self._at_targets(event, sender_id)
         if not targets:
-            yield event.plain_result(self._target_hint(event, "格式：踢 @某人"))
+            yield event.plain_result(self._target_hint(event, "格式：踢 @某人  [拉黑]"))
             return
         target = targets[0]
         if target in {sender_id, str(event.get_self_id() or "")}:
@@ -517,10 +546,20 @@ class GroupKit(Star):
         if not await onebot.is_bot_admin(event, group_id):
             yield event.plain_result("⚠️ 机器人没有群管理权限，没法踢人")
             return
-        done = await onebot.kick(event, group_id, target)
-        if done:
-            await asyncio.to_thread(self.db.log_op, group_id, sender_id, "踢人", target)
-        yield event.plain_result("👋 已踢出该成员" if done else "⚠️ 踢人失败，检查机器人权限")
+
+        # 「踢 @某人 拉黑」= 踢出去并且不再同意他入群。
+        # 不带后缀就是普通踢人，他随时能再申请进来 —— 这个区别值得一个口令区分开。
+        reject = parse_kick_reject(args)
+        done = await onebot.kick(event, group_id, target, reject_add_request=reject)
+        if not done:
+            yield event.plain_result("⚠️ 踢人失败，检查机器人权限")
+            return
+        await asyncio.to_thread(
+            self.db.log_op, group_id, sender_id, "踢人+拉黑" if reject else "踢人", target
+        )
+        yield event.plain_result(
+            "👋 已踢出并拉黑\n该成员不能再申请入群" if reject else "👋 已踢出该成员"
+        )
 
     async def _cmd_whole_ban(
         self, event, group_id: str, sender_id: str, member, enable: bool

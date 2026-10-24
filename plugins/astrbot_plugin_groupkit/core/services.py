@@ -36,6 +36,40 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
+def _width(text: str) -> int:
+    """终端里一行占多少格。中日韩字符与全角标点算 2 格。
+
+    QQ 用等宽中文字体，按这个宽度补空格才能真的对齐；直接用 len() 补
+    会让「抽奖暴击」和「改名」看起来差一格。
+    """
+    total = 0
+    for ch in text:
+        code = ord(ch)
+        if (
+            0x1100 <= code <= 0x115F
+            or 0x2E80 <= code <= 0xA4CF
+            or 0xAC00 <= code <= 0xD7A3
+            or 0xF900 <= code <= 0xFAFF
+            or 0xFE30 <= code <= 0xFE6F
+            or 0xFF00 <= code <= 0xFF60
+            or 0xFFE0 <= code <= 0xFFE6
+        ):
+            total += 2
+        else:
+            total += 1
+    return total
+
+
+def _pad(text: str, width: int) -> str:
+    return text + " " * max(0, width - _width(text))
+
+
+def _short_time(value: Any) -> str:
+    """'2026-10-24 14:20:01' → '10-24 14:20'。格式不对就原样给。"""
+    text = str(value or "")
+    return text[5:16] if len(text) >= 16 else text
+
+
 class Permission:
     """权限等级：QQ 群角色映射 与 插件内授权 取较高者。
 
@@ -288,6 +322,35 @@ class QuotaService:
             lines.append("发送「抽奖」立即抽取")
         else:
             lines.append(f"再发 {self.config.draw_per - progress} 条可抽一次")
+        return "\n".join(lines)
+
+    def render_history(self, group_id: str, user_id: str, limit: int = 5) -> str:
+        """最近几笔额度变动。
+
+        流水本来就在记（每次加扣都写 quota_logs），但一直没有入口，
+        出问题时没法向群友解释「我这额度怎么没了」。这里把它露出来。
+        """
+        rows = self.db.quota_history(group_id, user_id, limit)
+        balance = self.db.balance(group_id, user_id)
+        if not rows:
+            return (
+                "🧾 还没有额度记录\n"
+                f"当前{self.config.currency_name}：{balance}\n"
+                f"发一条消息就能领新人礼"
+            )
+
+        # 两列对齐：金额列固定宽，原因列按显示宽度补空格（中文算两格）。
+        amount_cell = max(_width(f"{int(row['amount']):+d}") for row in rows)
+        reason_cell = max(_width(str(row["reason"] or "—")) for row in rows)
+        lines = ["🧾 额度记录", ""]
+        for row in rows:
+            amount = int(row["amount"])
+            mark = "🟢" if amount > 0 else "🔴"
+            cell = _pad(f"{amount:+d}", amount_cell)
+            reason = _pad(str(row["reason"] or "—"), reason_cell)
+            lines.append(f"{mark} {cell}  {reason}  {_short_time(row['created_at'])}")
+        lines.append("")
+        lines.append(f"当前{self.config.currency_name}：{balance}")
         return "\n".join(lines)
 
     def draw(self, group_id: str, user_id: str) -> str:

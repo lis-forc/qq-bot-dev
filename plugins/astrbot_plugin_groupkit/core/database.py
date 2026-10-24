@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -507,11 +506,19 @@ class Database:
                 ).rowcount
         return removed
 
-    def vacuum(self) -> None:
-        """回收空间。会短暂锁库，只在维护时调。"""
+    def optimize(self) -> None:
+        """让 SQLite 刷新查询计划统计。
+
+        原来这里写的是 `VACUUM`，但那是个重操作：会重写整个库文件、期间独占锁，
+        在机器人长期在线的场景下每天跑一次并不合适（大群流水表到几十万行时能卡住几秒，
+        正好卡在群消息上）。真正需要的是 `PRAGMA optimize`——它只更新索引统计信息，
+        由 SQLite 自己判断哪些表需要分析，毫秒级，可以跟着每日裁剪一起跑。
+
+        空间回收交给 SQLite 的自动行为即可（WAL 模式下 checkpoint 会复用页）；
+        真需要 VACUUM 是运维动作，不该进热路径。
+        """
         with self._lock:
             self.conn.execute("PRAGMA optimize")
-            self.conn.execute("VACUUM")
 
     def backup_to(self, path: Path) -> Path:
         """在线备份（不锁库，安全）。"""
@@ -529,7 +536,3 @@ class Database:
     def _scalar(self, sql: str, params: tuple) -> Any:
         row = self.conn.execute(sql, params).fetchone()
         return None if row is None else row[0]
-
-
-def now_ts() -> int:
-    return int(time.time())

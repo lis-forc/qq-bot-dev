@@ -98,7 +98,10 @@ class PluginConfig:
 
     @property
     def notify_draw_ready(self) -> bool:
-        return bool(self.raw.get("notify_draw_ready", True))
+        # 默认关闭。攒满一次抽奖就在群里喊一句，200 人的活跃群一天能喊几十次，
+        # 这是纯噪音 —— 而且「额度」「今日」里本来就写着抽奖进度，信息不会丢。
+        # 想要热闹的群自己开。
+        return bool(self.raw.get("notify_draw_ready", False))
 
     # ---------- 交互 ----------
     @property

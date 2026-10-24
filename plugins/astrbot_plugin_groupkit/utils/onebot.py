@@ -55,7 +55,7 @@ async def call(event, action: str, **params: Any) -> Any:
     """调用协议端接口。失败时返回 _FAILED 哨兵。
 
     **不能用 None 表示失败。** OneBot v11 的写操作（set_group_ban /
-    set_group_kick / set_group_card / set_group_whole_ban）成功时 data 就是
+    set_group_kick / set_group_whole_ban）成功时 data 就是
     null，aiocqhttp 把 data 直接返回，Python 里拿到的就是 None。
     用「返回值 is None」判失败，会把每一次成功都记成失败 —— 表现就是
     群管操作明明生效了，机器人却回一句「⚠️ 失败，检查机器人权限」。
@@ -118,11 +118,6 @@ async def is_bot_admin(event, group_id: Any) -> bool:
 
 
 # ---------------------------------------------------------------- 群管动作
-async def set_group_card(event, group_id: Any, user_id: Any, card: str) -> bool:
-    result = await call(event, "set_group_card", group_id=int(group_id), user_id=int(user_id), card=card)
-    return succeeded(result)
-
-
 async def mute(event, group_id: Any, user_id: Any, seconds: int) -> bool:
     seconds = max(0, min(int(seconds), 2_592_000))
     result = await call(event, "set_group_ban", group_id=int(group_id), user_id=int(user_id), duration=seconds)

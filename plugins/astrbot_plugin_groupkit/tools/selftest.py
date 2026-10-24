@@ -203,6 +203,12 @@ def main() -> None:
         "群白名单生效",
         not config_mod.PluginConfig({"enabled_group_ids": ["1"]}).is_group_enabled("2"),
     )
+    # 抽奖提醒默认必须关：活跃群里每攒满一人就喊一句，一天几十条纯噪音。
+    check("抽奖提醒默认关闭", cfg.notify_draw_ready is False)
+    check(
+        "抽奖提醒可手动开",
+        config_mod.PluginConfig({"notify_draw_ready": True}).notify_draw_ready is True,
+    )
 
     print("\n=== 3. 数据库 / 额度 / 抽奖进度 ===")
     db = db_mod.Database(TMP / "db_test")
@@ -339,6 +345,43 @@ def main() -> None:
     crit_text = crit_quota.draw(gid, "crit1")
     check("暴击是加成不是取大", "+28" in crit_text, crit_text.replace("\n", " | "))
 
+    print("\n=== 3.7 额度记录 / 维护 / 踢人拉黑 ===")
+    # 流水一直在写，但之前没有任何入口能查 —— 群友问「我额度怎么没了」只能靠猜。
+    hist_quota = services_mod.QuotaService(db, config_mod.PluginConfig({}))
+    db.ensure_member(gid, "hist1", 0)
+    check(
+        "没有流水时给提示",
+        "还没有额度记录" in hist_quota.render_history(gid, "hist1"),
+        hist_quota.render_history(gid, "hist1").replace("\n", " | "),
+    )
+    for i in range(7):
+        db.add_quota(gid, "hist1", i + 1, f"第{i}笔", "hist1")
+    hist_text = hist_quota.render_history(gid, "hist1")
+    hist_rows = [line for line in hist_text.splitlines() if line[:1] in ("🟢", "🔴")]
+    check("默认只显示 5 笔", len(hist_rows) == 5, f"{len(hist_rows)} 行")
+    check("最新一笔在最上面", "+7" in hist_rows[0], hist_rows[0])
+    check("记录里带当前余额", "当前额度：" in hist_text)
+    check(
+        "中文按两格算宽度",
+        services_mod._width("改名") == 4 and services_mod._width("ab") == 2,
+    )
+    check("补空格按显示宽度", services_mod._pad("改名", 6) == "改名  ")
+    check(
+        "时间截到分钟",
+        services_mod._short_time("2026-10-24 14:20:01") == "10-24 14:20",
+    )
+
+    # 每天一次的维护：裁剪之后跑 PRAGMA optimize（不是 VACUUM，那个会独占锁库）。
+    db.optimize()
+    check("optimize 之后库仍可用", db.balance(gid, "hist1") > 0)
+
+    # 「踢 @某人 拉黑」的分叉：判错不会报错，只在几天后有人重新申请时才暴露。
+    check("踢人参数解析", router.drop_prefix("踢 @张三 拉黑", ("踢", "踢人")) == "拉黑")
+    check("拉黑后缀生效", mod.parse_kick_reject("拉黑") is True)
+    check("黑名单也算拉黑", mod.parse_kick_reject("黑名单") is True)
+    check("不写后缀=普通踢人", mod.parse_kick_reject("") is False)
+    check("别的理由不误判", mod.parse_kick_reject("刷屏") is False)
+
     print("\n=== 4. 真实入群天数 / 显示名 / 文案 ===")
     plugin = mod.GroupKit(
         context=None,
@@ -465,6 +508,8 @@ def main() -> None:
         "\n额度 / 抽奖 / 今日\n" in pages[0][1],
         pages[0][1].replace("\n", " | "),
     )
+    check("帮助里有额度记录", "\n额度记录\n" in pages[0][1])
+    check("帮助里说明拉黑", "拉黑" in pages[1][1], pages[1][1].replace("\n", " | "))
 
     print("\n=== 4.7 查陌生人不能凭空建档 ===")
     onebot_mod = importlib.import_module("gk_plugin.utils.onebot")
@@ -570,6 +615,69 @@ def main() -> None:
         )
     finally:
         onebot.logger = quiet
+
+    print("\n=== 4.9 踢人 / 拉黑（reject_add_request 有没有传下去）===")
+
+    class _KickApi:
+        """记录所有 call_action，用来断言参数真的传到了协议端。"""
+
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        async def call_action(self, action, **params):
+            self.calls.append((action, params))
+            if action == "get_group_member_info":
+                return {"data": {"user_id": str(params.get("user_id")), "role": "admin"}}
+            return None
+
+    class _KickEvent:
+        def __init__(self, target: str):
+            self.bot = types.SimpleNamespace(api=_KickApi())
+            self.message_obj = types.SimpleNamespace(
+                message=[router_at(target)], raw_message={}
+            )
+            self.calls = self.bot.api.calls
+
+        def get_platform_name(self):
+            return "aiocqhttp"
+
+        def get_self_id(self):
+            return "999999"
+
+        def get_group_id(self):
+            return "1001"
+
+        def get_sender_id(self):
+            return "6006"
+
+        def plain_result(self, text):
+            return text
+
+    at_mod = sys.modules["astrbot.api.message_components"]
+
+    def router_at(target: str):
+        return at_mod.At(qq=target)
+
+    async def _kick(args: str) -> tuple[list, list]:
+        ev = _KickEvent("7007")
+        replies = []
+        async for reply in plugin._cmd_kick(
+            ev, "1001", "6006", pdb.get_member("1001", "6006"), args
+        ):
+            replies.append(reply)
+        return replies, ev.calls
+
+    kick_calls, calls_plain = asyncio.run(_kick(""))
+    plain_kick = [p for a, p in calls_plain if a == "set_group_kick"]
+    check("普通踢人不传拉黑", plain_kick and plain_kick[0].get("reject_add_request") is False,
+          str(plain_kick))
+    check("普通踢人提示不带拉黑", all("拉黑" not in str(r) for r in kick_calls), str(kick_calls))
+
+    kick_calls2, calls_black = asyncio.run(_kick("拉黑"))
+    black_kick = [p for a, p in calls_black if a == "set_group_kick"]
+    check("拉黑真的传给协议端", black_kick and black_kick[0].get("reject_add_request") is True,
+          str(black_kick))
+    check("拉黑提示说明后果", any("不能再申请" in str(r) for r in kick_calls2), str(kick_calls2))
 
     print("\n=== 5. 信息卡渲染 ===")
     OUT_DIR.mkdir(parents=True, exist_ok=True)

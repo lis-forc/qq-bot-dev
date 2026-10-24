@@ -56,8 +56,8 @@
   "notify_draw_ready": {
     "description": "攒满抽奖机会时在群里提示",
     "type": "bool",
-    "default": true,
-    "hint": "关闭后不打扰，但仍会累计抽奖次数，用「抽奖」可查看。"
+    "default": false,
+    "hint": "默认关闭。活跃群里每攒满一人就喊一句会刷屏；「额度」和「今日」里一直显示抽奖进度，信息不会丢。只在人少、想让气氛热闹的群打开。"
   },
   "count_command_messages": {
     "description": "口令消息是否计入发言数",
