@@ -1,9 +1,11 @@
 """入群等通知事件。
 
-现在的职责只有一个：新人进群时立刻把真实入群时间落库，
-这样「在册 N 天」不用等他自己说话、也不用等下一次查协议端接口。
-以后要做入群欢迎、入群验证，都加在这里。
-"""
+职责：新人进群时立刻把真实入群时间落库 —— 这样「在册 N 天」不用等他
+自己说话、也不用等下一次查协议端接口。
+
+然后把「这个人是刚进来的」交给 ``domains/welcome.py``：欢迎语和入群验证
+都在那边。这里保持薄，是因为通知事件还有别的类型（退群、撤回、禁言
+通知……）要加，入口只该负责分流，不该长出业务。"""
 
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from astrbot.api import logger
 
 from ..core.context import PluginContext
 from ..utils import event as ev
+from . import welcome
 
 
 async def handle_notice(ctx: PluginContext, event, group_id: str) -> None:
@@ -35,3 +38,10 @@ async def handle_notice(ctx: PluginContext, event, group_id: str) -> None:
     )
     await asyncio.to_thread(ctx.db.set_join_info, group_id, str(user_id), join_time=join_ts)
     logger.info(f"[群助手] 记录入群时间：{user_id} @ 群 {group_id}")
+
+    # 欢迎 / 验证的异常不能把「入群时间已落库」这件事一起带走 ——
+    # 前者是锦上添花，后者是「在册天数」的依据。
+    try:
+        await welcome.on_join(ctx, event, str(group_id), str(user_id))
+    except Exception as exc:
+        logger.error(f"[群助手] 入群欢迎/验证失败: {exc}", exc_info=True)

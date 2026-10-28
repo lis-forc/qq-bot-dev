@@ -40,10 +40,11 @@ class HelpEntry:
 
     usage: str = ""
     desc: str = ""
-    page: str = "base"       # base | admin
+    page: str = "base"       # base（基础功能）| fun（娱乐功能）| admin
     level: int = 1           # 只在 page="admin" 时用来分组
     order: int = 0           # 页内排序，与注册顺序解耦（帮助的排序未必等于匹配顺序）
     slot: str = ""           # 相邻且同 slot 的条目合并成一行：额度 / 抽奖 / 今日
+    group: str = ""          # 图片菜单里的分块标题；同 group 落进同一张卡片
 
 
 @dataclass
@@ -57,6 +58,12 @@ class Command:
     help: tuple[HelpEntry, ...] = ()
     perm_short: str = ""     # 权限页里的简称；留空 = 不在权限页展示
     perm_extra: tuple[tuple[int, str], ...] = ()  # 额外出现在某等级的简称
+    # 这条命令现在算不算「存在」。None = 永远存在。
+    #
+    # 和 matcher 自己检查配置的区别：那种写法能让口令失效，但菜单里仍然
+    # 列着它 —— 一个用不了的口令挂在菜单上，比没有这个功能更让人困惑。
+    # 所以开关写成这个回调，匹配和菜单都读同一处判断。
+    enabled: Callable[[Any], bool] | None = None
 
 
 @dataclass

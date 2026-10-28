@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#faf6f3" />
+    <meta name="description" content="群助手配置台：口令功能、签到、额度、名片皮肤、图片素材都在这里配。" />
+    <title>群助手配置台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <!-- ============================================================ 页头 -->
+      <header class="topbar">
+        <div class="topbar-main">
+          <p class="kicker">GroupKit · 配置台</p>
+          <h1 id="brand">群助手</h1>
+          <p class="subtitle" id="tagline">
+            左边挑一组配置，右边改值，改完点下面保存 —— 立刻生效，不用重启机器人。
+          </p>
+        </div>
+        <div class="topbar-side">
+          <div class="health" id="health">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="healthText">正在读取</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- ============================================================ 一级导航 -->
+      <nav class="tabs" id="tabs" aria-label="功能分区">
+        <button class="tab is-active" data-view="config" type="button">
+          配置 <span class="tab-note" id="tabConfigNote">—</span>
+        </button>
+        <button class="tab" data-view="assets" type="button">
+          素材 <span class="tab-note" id="tabAssetsNote">—</span>
+        </button>
+        <button class="tab" data-view="data" type="button">
+          数据 <span class="tab-note">看报表和流水</span>
+        </button>
+        <span class="tabs-right">
+          <button class="refresh" id="refreshBtn" type="button">刷新</button>
+        </span>
+      </nav>
+
+      <div class="banner" id="banner" hidden></div>
+
+      <!-- ============================================================ 配置 -->
+      <section class="view" id="view-config" data-view="config">
+        <div class="split">
+          <aside class="rail">
+            <p class="rail-title">配置分组</p>
+            <div class="rail-list" id="configNav">
+              <div class="empty">正在读取配置…</div>
+            </div>
+            <p class="rail-foot">
+              共 <span id="configNote">—</span>，分组里的每一项都能改。<br />
+              <span id="configPersist"></span>
+            </p>
+          </aside>
+
+          <div class="main">
+            <p class="effective" id="effectiveLine" hidden></p>
+            <div id="configSections">
+              <div class="empty">正在读取配置…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 素材 -->
+      <section class="view" id="view-assets" data-view="assets" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">图片素材</span>
+            <span class="panel-note" id="assetsRoot">—</span>
+          </div>
+          <p class="lead">
+            这个插件的图<strong>全部由你来提供</strong>，代码只负责找到图、挑一张、把字排上去。
+            所以「放哪个文件夹、文件叫什么名字」就是配置的一部分 —— 丢一张图进去等于上架一件商品，
+            不用改代码，也不用重启。
+          </p>
+          <div class="folder-grid" id="folderGrid">
+            <div class="empty">正在读取素材目录…</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">名片皮肤</span>
+            <span class="panel-note" id="skinNote">—</span>
+          </div>
+          <div class="table-wrap">
+            <table class="skin-table">
+              <thead>
+                <tr>
+                  <th>商品名</th>
+                  <th class="num">价格</th>
+                  <th>文件名</th>
+                </tr>
+              </thead>
+              <tbody id="skinBody"></tbody>
+            </table>
+          </div>
+          <p class="config-hint" style="margin-top: 12px">
+            商品名取自文件名（去掉扩展名）。想单独定价就在名字后面加
+            <code>@价格</code>，比如 <code>樱花@300.png</code>；不写就用配置里的默认价。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">命名规则</span>
+            <span class="panel-note">三条，记住就够</span>
+          </div>
+          <ol class="rules">
+            <li>
+              <b>排序按自然序</b> —— <code>2.png</code> 排在 <code>10.png</code> 前面，
+              所以编号 <code>01-封面、02-玩法</code> 能按顺序发出去。
+            </li>
+            <li>
+              <b>文件名就是商品名</b>（只对 <code>cards/</code>）—— <code>@价格</code>
+              或 <code>=价格</code> 单独定价；<code>男.png</code>、<code>女.png</code>
+              是保留名，按性别自动发，不上架。
+            </li>
+            <li>
+              <b>只认这些扩展名</b> —— png / jpg / jpeg / webp / gif / bmp。
+              <code>.psd</code> 这类工程文件放进去不会被误当图片。
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- ============================================================ 数据 -->
+      <section class="view" id="view-data" data-view="data" hidden>
+        <div class="split">
+          <aside class="rail">
+            <p class="rail-title">群</p>
+            <div class="groups" id="groupList">
+              <div class="empty">正在读取群列表…</div>
+            </div>
+            <p class="rail-foot"><span id="groupNote">—</span> 个群有档案</p>
+          </aside>
+
+          <div class="main">
+            <nav class="tabs tabs--sub" id="dataTabs" aria-label="数据分区">
+              <button class="tab is-active" data-sub="overview" type="button">群概览</button>
+              <button class="tab" data-sub="members" type="button">成员</button>
+              <button class="tab" data-sub="checkin" type="button">签到</button>
+              <button class="tab" data-sub="quota" type="button">额度</button>
+              <button class="tab" data-sub="storage" type="button">数据库</button>
+            </nav>
+
+            <div class="subview" id="sub-overview" data-sub="overview">
+              <section class="stats" id="stats" aria-label="全局概览">
+                <div class="stat"><span class="stat-k">群</span><span class="stat-v skeleton"></span></div>
+                <div class="stat"><span class="stat-k">成员</span><span class="stat-v skeleton"></span></div>
+                <div class="stat"><span class="stat-k">今日发言</span><span class="stat-v skeleton"></span></div>
+                <div class="stat"><span class="stat-k">今日签到</span><span class="stat-v skeleton"></span></div>
+                <div class="stat"><span class="stat-k">额度总量</span><span class="stat-v skeleton"></span></div>
+                <div class="stat"><span class="stat-k">今日新增</span><span class="stat-v skeleton"></span></div>
+              </section>
+
+              <div class="panel">
+                <div class="panel-head">
+                  <span class="panel-title">近 7 天发言</span>
+                  <span class="panel-note" id="trendNote">—</span>
+                </div>
+                <div class="chart" id="chart"></div>
+                <div class="chart-legend">
+                  <span class="legend-item"><span class="legend-swatch"></span>每天发言条数</span>
+                  <span class="legend-item">悬停柱子看当天签到人数</span>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head">
+                  <span class="panel-title">排行</span>
+                  <span class="panel-note">
+                    <span class="seg" id="rankSeg">
+                      <button class="seg-btn is-active" data-rank="streak" type="button">连签</button>
+                      <button class="seg-btn" data-rank="total" type="button">累计</button>
+                      <button class="seg-btn" data-rank="quota" type="button">额度</button>
+                      <button class="seg-btn" data-rank="message" type="button">发言</button>
+                    </span>
+                  </span>
+                </div>
+                <div class="rank-list" id="rankList"></div>
+              </div>
+            </div>
+
+            <div class="subview" id="sub-members" data-sub="members" hidden>
+              <div class="panel">
+                <div class="toolbar">
+                  <input class="search" id="memberSearch" type="search" placeholder="搜显示名 / QQ 昵称 / 号码" />
+                  <span class="count-note" id="memberCount">—</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="member-table">
+                    <thead>
+                      <tr>
+                        <th>成员</th>
+                        <th class="num">额度</th>
+                        <th class="num">发言</th>
+                        <th class="num">签到</th>
+                        <th>称号</th>
+                        <th class="num">抽奖</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="memberBody"></tbody>
+                  </table>
+                </div>
+                <div class="pager">
+                  <span id="pagerNote">—</span>
+                  <button class="mini-btn" id="prevPage" type="button">上一页</button>
+                  <button class="mini-btn" id="nextPage" type="button">下一页</button>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <span class="panel-title">权限等级</span>
+                  <span class="panel-note">只在这里说明，群里不啰嗦</span>
+                </div>
+                <div class="perm-notes">
+                  <p><strong>1 级 · 成员</strong> — 日常口令全部可用；「给额度」是转账（自己的钱，对方收 80% 进一），人人可用。</p>
+                  <p><strong>2 级 · 助手</strong> — 禁言 / 解禁；可以代改别人的显示名和性别。</p>
+                  <p><strong>3 级 · 管理</strong>（QQ 管理员自动获得）— 踢人、扣额度；「授权」只能设别人 1~2 级，也动不了 3 级以上的人。</p>
+                  <p><strong>4 级 · 群主</strong>（QQ 群主自动获得）— 全部权限：发额度（无中生有，可给自己）、全群禁言、授权 1~4 级。被授权到 4 级的人同权。</p>
+                  <p class="perm-tip">等级取「群角色映射」和「手动授权」中较高的那个，所以手动降级降不动群主 / 管理员的身份。</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="subview" id="sub-checkin" data-sub="checkin" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <span class="panel-title">最近签到</span>
+                  <span class="panel-note">签到文字里的数字就是这份快照</span>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>日期</th>
+                        <th>成员</th>
+                        <th class="num">获得</th>
+                        <th class="num">连签</th>
+                        <th class="num">累计</th>
+                        <th>寄语</th>
+                      </tr>
+                    </thead>
+                    <tbody id="checkinBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="subview" id="sub-quota" data-sub="quota" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <span class="panel-title">额度流水</span>
+                  <span class="panel-note">只增不改，每笔都有来源</span>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>时间</th>
+                        <th>成员</th>
+                        <th class="num">变动</th>
+                        <th>原因</th>
+                        <th>操作者</th>
+                      </tr>
+                    </thead>
+                    <tbody id="quotaBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="subview" id="sub-storage" data-sub="storage" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <span class="panel-title">数据库</span>
+                  <span class="panel-note">库文件在 plugin_data 下，可直接复制备份</span>
+                </div>
+                <div class="cards-2">
+                  <div class="info-card">
+                    <span class="info-k">文件体积</span>
+                    <span class="info-v" id="dbSize">—</span>
+                    <p class="info-note">含 WAL 日志。数字突然翻倍通常是有大批量入群或签到。</p>
+                  </div>
+                  <div class="info-card">
+                    <span class="info-k">结构版本</span>
+                    <span class="info-v" id="dbSchema">—</span>
+                    <p class="info-note">插件启动时会自动迁移到最新版本，不需要手动处理。</p>
+                  </div>
+                </div>
+                <div class="panel-head is-divided">
+                  <span class="panel-title">各表行数</span>
+                  <span class="panel-note">哪张表在膨胀，一眼能看出来</span>
+                </div>
+                <div class="table-list" id="tableRows"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+
+    <!-- 保存条：只有改了东西才出现，避免「以为点一下就保存了」 -->
+    <div class="savebar" id="saveBar" hidden>
+      <span class="savebar-count" id="saveCount">改了 0 项</span>
+      <span class="savebar-spacer"></span>
+      <button class="mini-btn" id="discardBtn" type="button">放弃改动</button>
+      <button class="mini-btn is-primary" id="saveBtn" type="button">保存</button>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

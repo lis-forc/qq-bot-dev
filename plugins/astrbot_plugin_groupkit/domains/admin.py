@@ -6,6 +6,14 @@
 
 这样加新的管理命令时不会漏掉权限：忘记声明 level 会被默认成 1 级，
 测试里有一条断言盯着「管理命令必须声明等级」。
+
+额度的两条线别混：
+- **发额度 = 无中生有**（4 级，印钱），给自己发也行；
+- **扣额度 = 收走**（3 级起）；普通群友之间转钱是「给额度」（1 级，80% 到账），
+  在 quota 域里，不在这里。
+
+「授权」按调用者的等级受限：3 级只能设人 1~2 级（也不能动 3 级以上的人），
+4 级才能发 3~4 级。详细规则写在管理台的数据页，群里不解释。
 """
 
 from __future__ import annotations
@@ -80,7 +88,7 @@ async def mute(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
             ctx.db.log_op, env.group_id, env.sender_id, "禁言", target, str(seconds)
         )
     yield env.event.plain_result(
-        f"🔇 已禁言 {fmt_duration(seconds)}" if done else "⚠️ 禁言失败，检查机器人权限"
+        f"✅ 已禁言 {fmt_duration(seconds)}" if done else "⚠️ 禁言失败，检查机器人权限"
     )
 
 
@@ -98,7 +106,7 @@ async def unmute(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
         await asyncio.to_thread(
             ctx.db.log_op, env.group_id, env.sender_id, "解禁", targets[0]
         )
-    yield env.event.plain_result("🔊 已解除禁言" if done else "⚠️ 解禁失败，检查机器人权限")
+    yield env.event.plain_result("✅ 已解除禁言" if done else "⚠️ 解禁失败，检查机器人权限")
 
 
 async def kick(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
@@ -126,7 +134,7 @@ async def kick(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
         ctx.db.log_op, env.group_id, env.sender_id, "踢人+拉黑" if reject else "踢人", target
     )
     yield env.event.plain_result(
-        "👋 已踢出并拉黑\n该成员不能再申请入群" if reject else "👋 已踢出该成员"
+        "✅ 已踢出并拉黑\n该成员不能再申请入群" if reject else "✅ 已踢出该成员"
     )
 
 
@@ -142,7 +150,7 @@ async def whole_ban(ctx: PluginContext, env: CommandEnv, enable: bool) -> AsyncG
             env.group_id, env.sender_id,
             "全群禁言" if enable else "解除全群禁言",
         )
-        yield env.event.plain_result("🔇 已开启全群禁言" if enable else "🔊 已解除全群禁言")
+        yield env.event.plain_result("✅ 已开启全群禁言" if enable else "✅ 已解除全群禁言")
     else:
         yield env.event.plain_result("⚠️ 操作失败，检查机器人权限")
 
@@ -173,22 +181,54 @@ async def adjust_quota(ctx: PluginContext, env: CommandEnv, sign: int) -> AsyncG
         "发额度" if sign > 0 else "扣额度", target, str(amount),
     )
     yield env.event.plain_result(
-        f"{'💎 已发放' if sign > 0 else '💸 已扣除'} {amount} {cur}\n对方当前：{balance}"
+        f"{'✅ 已发放' if sign > 0 else '✅ 已扣除'} {amount} {cur}\n对方当前：{balance}"
     )
 
 
 async def grant(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """授权 @某人 等级。
+    """授权 @某人 等级。按调用者的等级受限：
 
-    这里只校验「等级 ≥ 4」，不校验身份 —— 群主授到 4 级的人，
-    同样可以继续给别人授权。
+    - 3 级（管理员）：只能设 1~2 级，而且动不了现在已是 3 级以上的人；
+    - 4 级：1~4 任意。
+
+    等级是「取高」模型（见 Permission.level），所以把 QQ 管理员降到 1
+    实际降不掉 —— 他的 3 级来自群角色。这条不在群里解释，写进管理台。
     """
     targets = ev.at_targets(env.event, env.sender_id)
     level = parse_int(strip_at(env.args))
     if not targets or level < 1 or level > 4:
-        yield env.event.plain_result("格式：授权 @某人 3\n（1~4 级）")
+        yield env.event.plain_result("格式：授权 @某人 2\n（1~4 级）")
         return
     target = targets[0]
+    if target == env.sender_id:
+        yield env.event.plain_result("给自己授权？你的等级来自你现在的身份")
+        return
+    if target == ev.self_id(env.event):
+        yield env.event.plain_result("机器人不需要权限，它只听配置的")
+        return
+
+    ok, viewer = await ctx.permission.require(
+        env.event, env.group_id, env.sender_id, env.member, 3
+    )
+    if not ok:
+        yield env.event.plain_result("⚠️ 需要「管理」权限")
+        return
+    if viewer < 4 and level > 2:
+        yield env.event.plain_result(
+            "⚠️ 管理员只能设 1~2 级\n3~4 级要群主来发"
+        )
+        return
+    if viewer < 4:
+        # 目标的等级要连「手动授权」一起算 —— 只查群角色的话，
+        # 被手动授过 3 级的人在管理员眼里就是普通成员，会被越权改动。
+        target_member = await asyncio.to_thread(ctx.db.get_member, env.group_id, target)
+        current = await ctx.permission.level(env.event, env.group_id, target, target_member)
+        if current >= 3:
+            yield env.event.plain_result(
+                "⚠️ 这位是 3 级以上，管理员动不了\n要调整请找群主"
+            )
+            return
+
     await asyncio.to_thread(ctx.db.ensure_member, env.group_id, target, 0)
     await asyncio.to_thread(ctx.db.set_permission, env.group_id, target, level)
     await asyncio.to_thread(
@@ -237,7 +277,7 @@ COMMANDS = [
         handler=mute,
         level=2,
         perm_short="禁言",
-        help=(HelpEntry("禁言 @某人 [时长]", page="admin", level=2, order=10),),
+        help=(HelpEntry("禁言 @某人 [时长]", "让他一段时间不能说话", page="admin", level=2, order=10),),
     ),
     Command(
         key="unmute",
@@ -245,7 +285,7 @@ COMMANDS = [
         handler=unmute,
         level=2,
         perm_short="解禁",
-        help=(HelpEntry("解禁 @某人", page="admin", level=2, order=20),),
+        help=(HelpEntry("解禁 @某人", "提前放出来", page="admin", level=2, order=20),),
     ),
     Command(
         key="kick",
@@ -253,7 +293,7 @@ COMMANDS = [
         handler=kick,
         level=3,
         perm_short="踢人",
-        help=(HelpEntry("踢 @某人 [拉黑]", page="admin", level=3, order=10),),
+        help=(HelpEntry("踢 @某人 [拉黑]", "移出群，加「拉黑」就不能再申请", page="admin", level=3, order=10),),
     ),
     Command(
         key="whole_ban_on",
@@ -261,7 +301,7 @@ COMMANDS = [
         handler=_whole_ban_cmd(True),
         level=4,
         perm_short="全群禁言",
-        help=(HelpEntry("全群禁言", page="admin", level=4, order=10, slot="wholeban"),),
+        help=(HelpEntry("全群禁言", "全员闭嘴", page="admin", level=4, order=10, slot="wholeban"),),
     ),
     Command(
         key="whole_ban_off",
@@ -269,15 +309,15 @@ COMMANDS = [
         handler=_whole_ban_cmd(False),
         level=4,
         perm_short="全群解禁",
-        help=(HelpEntry("全群解禁", page="admin", level=4, order=11, slot="wholeban"),),
+        help=(HelpEntry("全群解禁", "恢复正常", page="admin", level=4, order=11, slot="wholeban"),),
     ),
     Command(
         key="quota_add",
-        matcher=prefix(("发额度", "给额度", "加额度")),
+        matcher=prefix(("发额度", "加额度")),
         handler=_adjust_cmd(1),
-        level=3,
+        level=4,
         perm_short="发额度",
-        help=(HelpEntry("发额度 @某人 50", page="admin", level=3, order=20),),
+        help=(HelpEntry("发额度 @某人 50", "无中生有（可以给自己），4 级专用", page="admin", level=4, order=20),),
     ),
     Command(
         key="quota_sub",
@@ -285,14 +325,14 @@ COMMANDS = [
         handler=_adjust_cmd(-1),
         level=3,
         perm_short="扣额度",
-        help=(HelpEntry("扣额度 @某人 50", page="admin", level=3, order=30),),
+        help=(HelpEntry("扣额度 @某人 50", "扣他的钱，3 级起", page="admin", level=3, order=30),),
     ),
     Command(
         key="grant",
         matcher=prefix(("授权", "设权限", "设置权限")),
         handler=grant,
-        level=4,
+        level=3,
         perm_short="授权",
-        help=(HelpEntry("授权 @某人 3", page="admin", level=4, order=20),),
+        help=(HelpEntry("授权 @某人 2", "管理员可设 1~2 级；3~4 级要 4 级来发", page="admin", level=3, order=20),),
     ),
 ]

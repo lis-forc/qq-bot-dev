@@ -33,3 +33,6 @@ desktop.ini
 
 # 本地打包产物（上传用 zip，不进仓库）
 dist/
+
+# 工作台内部状态，与项目无关
+.workbuddy/

@@ -11,14 +11,20 @@ from datetime import date, datetime
 from typing import Any
 
 from .config import PluginConfig
-from .database import Database
-from ..utils import onebot
-from ..utils.router import validate_display_name, validate_hobby
+from .database import Database, _day_before, _today
+from ..utils import deco, nickname, onebot
+from ..utils.router import validate_hobby
+from ..utils.text import pad as _pad
+from ..utils.text import width as _width
+
+try:  # 本地单测没有 astrbot
+    from astrbot.api import logger
+except Exception:  # pragma: no cover
+    import logging
+
+    logger = logging.getLogger("astrbot_plugin_groupkit")
 
 LEVEL_NAMES = {1: "成员", 2: "助手", 3: "管理", 4: "群主"}
-
-# OneBot 的 sex 字段 → 展示用
-SEX_MAP = {"male": "男", "female": "女", "unknown": "保密", "男": "男", "女": "女", "保密": "保密"}
 
 
 def _as_date(value: Any) -> date | None:
@@ -36,38 +42,26 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
-def _width(text: str) -> int:
-    """终端里一行占多少格。中日韩字符与全角标点算 2 格。
-
-    QQ 用等宽中文字体，按这个宽度补空格才能真的对齐；直接用 len() 补
-    会让「抽奖暴击」和「改名」看起来差一格。
-    """
-    total = 0
-    for ch in text:
-        code = ord(ch)
-        if (
-            0x1100 <= code <= 0x115F
-            or 0x2E80 <= code <= 0xA4CF
-            or 0xAC00 <= code <= 0xD7A3
-            or 0xF900 <= code <= 0xFAFF
-            or 0xFE30 <= code <= 0xFE6F
-            or 0xFF00 <= code <= 0xFF60
-            or 0xFFE0 <= code <= 0xFFE6
-        ):
-            total += 2
-        else:
-            total += 1
-    return total
-
-
-def _pad(text: str, width: int) -> str:
-    return text + " " * max(0, width - _width(text))
-
-
 def _short_time(value: Any) -> str:
     """'2026-10-24 14:20:01' → '10-24 14:20'。格式不对就原样给。"""
     text = str(value or "")
     return text[5:16] if len(text) >= 16 else text
+
+
+def _live_streak(checkin: dict[str, Any]) -> int:
+    """库里存的连签天数，断签就当 0。
+
+    `streak_days` 只在「这次签到」那一刻被重算，之后一直躺着。所以一个人
+    上周连签 20 天、这周没签，库里还是 20 —— 直接印到卡上就是在骗他。
+    判断标准很简单：最后一次签到是今天或昨天，连签才算还活着。
+    （昨天也算：今天还没签，不等于断了。）
+    """
+    streak = int(checkin.get("streak_days") or 0)
+    if streak <= 0:
+        return 0
+    last = str(checkin.get("last_date") or "")
+    today = _today()
+    return streak if last in (today, _day_before(today)) else 0
 
 
 class Permission:
@@ -148,9 +142,15 @@ class ProfileService:
 
     @staticmethod
     def sex(member: dict[str, Any] | None) -> str:
+        """展示用的性别：男 / 女 / 空串（未设定）。
+
+        **空串是「没说」，不是「男」。** 名片底图仍然会给一个默认（按男版画），
+        但群名片前面的记号必须是 🧸 —— 把没填性别的人一律标成男生，
+        是替别人做主，而且做错了没人会来纠正，只会默默离群。
+        """
         if not member:
-            return "保密"
-        return SEX_MAP.get(str(member.get("sex") or ""), "") or "保密"
+            return ""
+        return nickname.normalize_sex(member.get("sex"))
 
     @staticmethod
     def days(member: dict[str, Any] | None) -> int:
@@ -203,48 +203,32 @@ class ProfileService:
         # 群友自己用「性别」改过的值优先。need 是按多个字段一起判断的，
         # 所以很可能因为 join_time 还缺就来查一次协议端 —— 那时如果无脑写
         # sex，手动改的性别就被 QQ 资料冲掉了，而且悄无声息。
+        #
+        # 映射成空串（unknown）时写 None 而不是空串：set_join_info 只写非空值，
+        # 所以「协议端也不知道」不会把库里已有的值擦掉。
         manual_sex = str((member or {}).get("sex") or "")
-        sex = None if manual_sex else (SEX_MAP.get(raw_sex, "保密") if raw_sex else None)
-        qq_name = str(info.get("card") or info.get("nickname") or "").strip() or None
+        sex = None if manual_sex else (nickname.normalize_sex(raw_sex) or None)
+        # 群名片可能带着我们自己挂上去的性别记号，存进库前先剥掉 ——
+        # 库里存的永远是「名字」，记号是展示层现拼的。
+        card_text = str(info.get("card") or "").strip()
+        qq_name = (
+            nickname.strip(card_text, self.config) or str(info.get("nickname") or "").strip()
+        ) or None
 
         return self.db.set_join_info(
             group_id, user_id, join_time=join_ts, sex=sex, qq_name=qq_name
         )
 
     # ---------------------------------------------------------- 修改
-    def set_display_name(
-        self, group_id: str, user_id: str, name: str, *, charge: bool
-    ) -> str:
-        ok, message = validate_display_name(name)
-        if not ok:
-            return f"⚠️ {message}"
+    def set_display_name(self, group_id: str, user_id: str, name: str) -> dict[str, Any]:
+        """只写库。校验、拼群名片、调协议端都不在这里。
 
-        member = self.db.ensure_member(group_id, user_id)
-        cost = self.config.rename_cost if charge else 0
-        old = self.display_name(member, user_id)
-
-        if cost > 0:
-            paid, balance = self.db.add_quota(
-                group_id, user_id, -cost, "改名", operator_id=user_id
-            )
-            if not paid:
-                return (
-                    f"⚠️ {self.config.currency_name}不足\n"
-                    f"改名需要 {cost}，你当前有 {balance}\n"
-                    f"每发言 {self.config.draw_per} 条可用「抽奖」获得{self.config.currency_name}"
-                )
-        updated = self.db.set_display_name(group_id, user_id, name)
-        self.db.log_op(group_id, user_id, "改名", user_id, f"{old} → {name}")
-
-        lines = ["✅ 改名成功"]
-        if old and old != name:
-            lines.append(f"{old} → {name}")
-        else:
-            lines.append(f"显示名：{name}")
-        if cost > 0:
-            lines.append(f"消耗{self.config.currency_name}：{cost}")
-        lines.append(f"当前{self.config.currency_name}：{updated.get('quota', 0)}")
-        return "\n".join(lines)
+        这一层刻意不碰 IO：改了名字还要不要顺带改群名片、失败了怎么提示，
+        属于「一次改名」这条业务流程，归 ``domains/nickname.py`` 管。
+        职责分开的好处是这一层能被自测直接调、不会因为协议端挂了而失败。
+        """
+        self.db.ensure_member(group_id, user_id)
+        return self.db.set_display_name(group_id, user_id, name)
 
     def set_hobby(self, group_id: str, user_id: str, hobby: str) -> str:
         ok, message = validate_hobby(hobby)
@@ -255,10 +239,14 @@ class ProfileService:
         return f"✅ 爱好已更新\n{hobby}"
 
     def set_sex(self, group_id: str, user_id: str, sex: str) -> str:
-        """改信息卡上的性别。sex 已经由 router.parse_sex 归一过。"""
+        """改信息卡上的性别。sex 已经由 ``nickname.parse_sex`` 归一过。
+
+        空串是合法值（= 未设定），所以这里不看真假只看 None ——
+        「性别 保密」和「性别 不设」都要能落到空串上。
+        """
         self.db.ensure_member(group_id, user_id)
-        updated = self.db.set_sex(group_id, user_id, sex)
-        return f"✅ 性别已更新\n{self.sex(updated)}"
+        updated = self.db.set_sex(group_id, user_id, nickname.store_sex(sex))
+        return f"✅ 性别已更新\n{nickname.sex_label(self.sex(updated))}"
 
     # ---------------------------------------------------------- 信息卡数据
     def card_data(
@@ -268,18 +256,41 @@ class ProfileService:
         member: dict[str, Any],
         counts: dict[str, int],
     ) -> dict[str, Any]:
+        """信息卡要展示的全部数据。
+
+        签到相关的三项（连签 / 累计签到 / 称号）也在这里取：
+        卡是群友唯一会反复看的一页，「我连签几天了」不该逼他再发一次
+        「签到记录」。查的是同一条 checkins 行，一次主键查询，几乎没成本。
+        """
+        checkin = {}
+        try:
+            checkin = self.db.get_checkin(group_id, user_id) or {}
+        except Exception as exc:  # 签到表缺失也不该让信息卡整张画不出来
+            logger.warning(f"[群助手] 读签到状态失败，信息卡留空: {exc}")
+
         return {
             "name": self.display_name(member, user_id),
-            "gender": self.sex(member),
-            "hobby": str(member.get("hobby") or "无"),
+            # 展示用「未设定」，底图那边会自己把它当男版处理（见 ImageBank.base_card）。
+            "gender": nickname.sex_label(self.sex(member)),
+            # 原始三态。群名片前面的记号按它选 🦊 / 🐰 / 🧸，不能用展示文案。
+            "sex": self.sex(member),
+            # 空串交给渲染层兜底：图片上写「还没写」，文字版可以干脆不占一行。
+            "hobby": str(member.get("hobby") or ""),
             "quota": int(member.get("quota") or 0),
             "days": self.days(member),
+            # 卡上六项里唯一来自「别人的记录」的字段。结缔成功时双方各写一份。
+            "relation": str(member.get("relation") or ""),
+            "relation_with": str(member.get("relation_with") or ""),
             "today": int(counts.get("today", 0)),
             "month": int(counts.get("month", 0)),
             "total": int(counts.get("total", 0)),
             "qq": user_id,
-            "show_qq": self.config.card_show_qq,
             "currency": self.config.currency_name,
+            "streak": _live_streak(checkin),
+            "checkin_days": int(checkin.get("total_days") or 0),
+            # 名片皮肤名。渲染层拿它去 assets/images/cards 里找图；
+            # 找不到（图被删了）就自动退回默认皮肤。
+            "skin": str(member.get("card_skin") or ""),
         }
 
 
@@ -298,7 +309,7 @@ class StatsService:
         draws = int(member.get("draws") or 0)
         progress = int(member.get("msg_progress") or 0)
         lines = [
-            "📊 发言统计",
+            deco.head("发言统计", "stats"),
             f"今日：{counts['today']} 条",
             f"本月：{counts['month']} 条",
             f"累计：{counts['total']} 条",
@@ -322,7 +333,7 @@ class QuotaService:
         draws = int(member.get("draws") or 0)
         progress = int(member.get("msg_progress") or 0)
         lines = [
-            f"💎 我的{self.config.currency_name}",
+            deco.head(f"我的{self.config.currency_name}", "quota"),
             f"当前：{int(member.get('quota') or 0)}",
             "",
             f"抽奖进度：{progress} / {self.config.draw_per}",
@@ -334,7 +345,7 @@ class QuotaService:
             lines.append(f"再发 {self.config.draw_per - progress} 条可抽一次")
         return "\n".join(lines)
 
-    def render_history(self, group_id: str, user_id: str, limit: int = 5) -> str:
+    def render_history(self, group_id: str, user_id: str, limit: int = 20) -> str:
         """最近几笔额度变动。
 
         流水本来就在记（每次加扣都写 quota_logs），但一直没有入口，
@@ -344,7 +355,7 @@ class QuotaService:
         balance = self.db.balance(group_id, user_id)
         if not rows:
             return (
-                "🧾 还没有额度记录\n"
+                f"{deco.head('还没有额度记录', 'quota')}\n"
                 f"当前{self.config.currency_name}：{balance}\n"
                 f"发一条消息就能领新人礼"
             )
@@ -352,13 +363,15 @@ class QuotaService:
         # 两列对齐：金额列固定宽，原因列按显示宽度补空格（中文算两格）。
         amount_cell = max(_width(f"{int(row['amount']):+d}") for row in rows)
         reason_cell = max(_width(str(row["reason"] or "—")) for row in rows)
-        lines = ["🧾 额度记录", ""]
+        lines = [deco.head("额度记录", "quota"), ""]
         for row in rows:
             amount = int(row["amount"])
-            mark = "🟢" if amount > 0 else "🔴"
+            # 原来这里是 🟢/🔴。去掉有两个原因：astral emoji 在部分
+            # QQ 客户端没有字形（显示成豆腐块），而且 width() 按 1 格算、
+            # 实际可能占 2 格，会把金额列推歪。正负号本身已经说明了方向。
             cell = _pad(f"{amount:+d}", amount_cell)
             reason = _pad(str(row["reason"] or "—"), reason_cell)
-            lines.append(f"{mark} {cell}  {reason}  {_short_time(row['created_at'])}")
+            lines.append(f"{cell}  {reason}  {_short_time(row['created_at'])}")
         lines.append("")
         lines.append(f"当前{self.config.currency_name}：{balance}")
         return "\n".join(lines)
@@ -372,7 +385,7 @@ class QuotaService:
             progress = int(member.get("msg_progress") or 0)
             need = max(0, self.config.draw_per - progress)
             return (
-                "🎟 没有抽奖机会了\n"
+                deco.head("没有抽奖机会了", "draw") + "\n"
                 f"抽奖进度：{progress} / {self.config.draw_per}\n"
                 f"再发 {need} 条就能再抽一次"
             )
@@ -387,7 +400,7 @@ class QuotaService:
             group_id, user_id, amount, "抽奖" + ("暴击" if crit else ""), user_id
         )
 
-        lines = [f"🎲 抽奖结果{' · 暴击！' if crit else ''}"]
+        lines = [deco.head(f"抽奖结果{' · 暴击！' if crit else ''}", "draw")]
         lines.append(f"获得{cur}：+{amount}")
         lines.append(f"当前{cur}：{balance}")
         # 剩下的机会放在最后一行，回答「我还能抽几次」这个必然会问的问题。

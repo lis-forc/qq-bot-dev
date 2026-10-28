@@ -18,11 +18,31 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from ..core.command import Command, CommandEnv, HelpEntry, exact, require_level
-from . import admin, help as help_domain, profile, quota, stats, sticker
+from . import admin, bag, checkin, help as help_domain, profile, quota, rank, shop, stats, sticker
+
+
+async def _page_handler(ctx, env: CommandEnv, which: str) -> AsyncGenerator:
+    async for reply in help_domain.send_menu(ctx, env.event, which):
+        yield reply
 
 
 async def _help_handler(ctx, env: CommandEnv) -> AsyncGenerator:
-    async for reply in help_domain.send_help(ctx, env.event):
+    """「帮助」= 日常 + 娱乐一整份，不再只给基础页。
+
+    以前分三页，是因为一页放不下；现在文字排得紧，两页并成一条正好,
+    而且少一次「我该发哪个口令」的犹豫。
+    """
+    async for reply in _page_handler(ctx, env, "all"):
+        yield reply
+
+
+async def _fun_handler(ctx, env: CommandEnv) -> AsyncGenerator:
+    async for reply in _page_handler(ctx, env, "fun"):
+        yield reply
+
+
+async def _admin_page_handler(ctx, env: CommandEnv) -> AsyncGenerator:
+    async for reply in _page_handler(ctx, env, "admin"):
         yield reply
 
 
@@ -31,26 +51,58 @@ def _help_command() -> Command:
         key="help",
         matcher=exact(("帮助", "口令", "菜单", "功能", "指令", "help", "menu")),
         handler=_help_handler,
-        help=(HelpEntry("帮助", "本菜单", page="base", order=90),),
+        help=(HelpEntry("帮助", "全部口令，一条消息看全", page="base", order=90, group="菜单"),),
+    )
+
+
+def _fun_command() -> Command:
+    """表情包那一页。单独一个口令是因为基础页塞不下，
+    而且想玩的人不需要先看完额度、统计这些。"""
+    return Command(
+        key="fun_menu",
+        matcher=exact(("娱乐", "娱乐功能", "玩什么", "娱乐菜单")),
+        handler=_fun_handler,
+        help=(HelpEntry("娱乐", "只看表情包那一块", page="base", order=91, group="菜单"),),
+    )
+
+
+def _admin_page_command() -> Command:
+    return Command(
+        key="admin_menu",
+        matcher=exact(("管理", "管理功能", "群管菜单", "管理口令")),
+        handler=_admin_page_handler,
+        perm_short="管理菜单",
+        # 放在基础页的「菜单」组里，说明写清楚「要权限」——
+        # 普通群员点开只会看到自己那几行，不会困惑。
+        help=(HelpEntry("管理", "只看群管那一块，按你的等级列出", page="base", order=92, group="菜单"),),
     )
 
 
 # ---------------------------------------------------------------------------
 # 匹配顺序（从上到下，先命中先用）：
-#   信息卡 → 帮助 → 改名 → 爱好 → 性别 → 额度/抽奖/今日/额度记录
-#   → 表情列表/搜表情/表情详情/表情 → 全群禁言/全群解禁 → 解禁 → 禁言
-#   → 踢人 → 发额度/扣额度 → 授权
+#   信息卡 → 帮助/娱乐/管理 三个菜单 → 改名 → 爱好 → 性别 → 名片/换名片
+#   → 额度/抽奖/今日/额度记录 → 签到/签到记录/称号/佩戴 → 额度排行/签到排行
+#   → 商店/购买 → 表情列表/搜表情/表情详情/表情
+#   → 全群禁言/全群解禁 → 解禁 → 禁言 → 踢人 → 发额度/扣额度 → 授权
 # ---------------------------------------------------------------------------
 COMMANDS: list[Command] = [
     profile.COMMANDS[0],      # info
-    _help_command(),          # help
+    _help_command(),          # 帮助（基础页）
+    _fun_command(),           # 娱乐（表情页）
+    _admin_page_command(),    # 管理（按等级分块）
     profile.COMMANDS[1],      # rename
     profile.COMMANDS[2],      # hobby
     profile.COMMANDS[3],      # sex
+    profile.COMMANDS[4],      # my_card（名片）
+    profile.COMMANDS[5],      # wear_card（换名片）
     quota.COMMANDS[0],        # 额度
     quota.COMMANDS[1],        # 抽奖
     stats.COMMANDS[0],        # 今日
     quota.COMMANDS[2],        # 额度记录
+    *checkin.COMMANDS,        # 签到（含记录 / 排行）
+    *bag.COMMANDS,            # 背包 / 头衔 / 关系（「头衔」前缀要在通用口令之前）
+    *rank.COMMANDS,           # 额度排行
+    *shop.COMMANDS,           # 商店 / 购买（「兑换」整句归商店，带参数归购买）
     *sticker.COMMANDS,        # 表情（列表/搜索/详情 排在「表情」前缀之前）
     *admin.COMMANDS,          # 群管（内部已按「全群在前」的顺序排好）
 ]

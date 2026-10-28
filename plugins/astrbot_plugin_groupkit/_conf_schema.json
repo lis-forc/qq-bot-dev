@@ -14,38 +14,205 @@
     "description": "新人礼额度",
     "type": "int",
     "default": 10,
-    "slider": { "min": 0, "max": 200, "step": 1 },
+    "slider": {
+      "min": 0,
+      "max": 200,
+      "step": 1
+    },
     "hint": "成员第一次发言时自动到账，只发一次。设为 0 表示不发。"
+  },
+  "welcome_enabled": {
+    "description": "有人入群时发欢迎语",
+    "type": "bool",
+    "default": true,
+    "hint": "机器人在群里才收得到入群通知。欢迎语留空时用内置模板，会自动带上新人昵称和新人礼说明。"
+  },
+  "welcome_text": {
+    "description": "欢迎语模板（可留空）",
+    "type": "string",
+    "default": "",
+    "hint": "可用占位符：{at} 会 @ 新人、{name} 昵称、{group} 群号、{quota} 新人礼额度、{currency} 额度名。留空 = 用内置文案；想换行直接换行。"
+  },
+  "verify_enabled": {
+    "description": "开启入群验证（答题解禁）",
+    "type": "bool",
+    "default": false,
+    "hint": "新人进群在群里发验证题，他在群里回答，通过才算进群；超时未通过会被移出群。不禁言、不走私聊——被禁言的人在群里发不出消息，私聊又依赖临时会话，两条路都不可靠。需要机器人有群管理权限（超时踢人用）。和「欢迎语」互不影响，可以只开其中一个。"
+  },
+  "verify_question": {
+    "description": "验证问题",
+    "type": "string",
+    "default": "",
+    "hint": "只用来提示新人。留空 = 用内置那句「回复任意一句话就算通过」。"
+  },
+  "verify_answers": {
+    "description": "可接受的答案（逗号分隔）",
+    "type": "string",
+    "default": "",
+    "hint": "留空 = 新人发任意一条消息即通过（最省事，推荐）。填了只认这几个词，英文逗号分隔，不区分大小写。"
+  },
+  "verify_timeout_minutes": {
+    "description": "验证超时（分钟）",
+    "type": "int",
+    "default": 5,
+    "slider": {
+      "min": 1,
+      "max": 60,
+      "step": 1
+    },
+    "hint": "超时未通过就移出群。别设太短——新人不一定马上看群。"
+  },
+  "nick_enabled": {
+    "type": "bool",
+    "description": "昵称系统总开关（性别记号 / 名片回改 / 名字规则）",
+    "default": true,
+    "hint": "开着时机器人会管群名片：前面加性别记号、名字被人手改回去时改回来、新成员没改名会被提醒。关掉就退回老行为——只存一个显示名，不碰群名片。"
+  },
+  "nick_emoji_male": {
+    "type": "string",
+    "description": "男生记号",
+    "default": "🦊",
+    "hint": "放在群名片最前面。留空表示男生不加记号。"
+  },
+  "nick_emoji_female": {
+    "type": "string",
+    "description": "女生记号",
+    "default": "🐰",
+    "hint": "留空表示女生不加记号。"
+  },
+  "nick_emoji_none": {
+    "type": "string",
+    "description": "性别未设定时的记号",
+    "default": "🧸",
+    "hint": "性别没填的人都用这个。留空表示不给这些人加记号。"
+  },
+  "nick_separator": {
+    "type": "string",
+    "description": "记号与名字之间的分隔符",
+    "default": " ",
+    "hint": "默认就是一个空格 —— 面板上那个输入框看着是空的，因为里面确实只装了一个空格，别把它删掉。粘在一起会读成「🦊张三」是一个词，空一格才看得出那是前缀。清空 = 不加分隔符（通常不是你要的）。"
+  },
+  "nick_min_len": {
+    "type": "int",
+    "description": "名字最少几个字",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 8,
+      "step": 1
+    }
+  },
+  "nick_max_len": {
+    "type": "int",
+    "description": "名字最多几个字",
+    "default": 4,
+    "slider": {
+      "min": 1,
+      "max": 12,
+      "step": 1
+    },
+    "hint": "「两个字到四个字」是默认值。改大之后老成员不会被动，只影响之后的改名。"
+  },
+  "nick_allow_digits": {
+    "type": "bool",
+    "description": "名字里允许出现数字",
+    "default": false,
+    "hint": "默认不允许。号码、年份、生日都是「个人信息」而不是名字。"
+  },
+  "nick_force": {
+    "type": "bool",
+    "description": "强制新成员改名",
+    "default": true,
+    "hint": "开：进群时在欢迎语里提醒，之后每次发言都提醒，提醒够次数就静音一会儿。关：只加记号，不催。"
+  },
+  "nick_join_text": {
+    "type": "text",
+    "description": "入群时追加的改名提示（可留空）",
+    "default": "",
+    "hint": "留空用内置那段。可用占位符：{name} 昵称、{min}、{max} 名字长度、{example} 一句示例。"
+  },
+  "nick_nag_text": {
+    "type": "text",
+    "description": "没改名的人发言时的提醒（可留空）",
+    "default": "",
+    "hint": "留空用内置那段。可用占位符：{name}、{min}、{max}、{n} 第几次、{limit} 总次数、{mute} 静音分钟。"
+  },
+  "nick_nag_limit": {
+    "type": "int",
+    "description": "提醒几次后静音",
+    "default": 3,
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 1
+    }
+  },
+  "nick_nag_mute_minutes": {
+    "type": "int",
+    "description": "静音时长（分钟）",
+    "default": 1,
+    "slider": {
+      "min": 1,
+      "max": 120,
+      "step": 1
+    },
+    "hint": "目的是打断他一下，不是惩罚，所以默认 1 分钟——他去改个名就自动恢复了。"
   },
   "rename_cost": {
     "description": "改名消耗额度",
     "type": "int",
-    "default": 1,
-    "slider": { "min": 0, "max": 50, "step": 1 },
-    "hint": "改名改的是信息卡上的显示名。设为 0 表示免费。"
+    "default": 0,
+    "slider": {
+      "min": 0,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "改名默认不自动扣费。这个群里改名是「进来就要做的事」，不是消费——新人没改名会被一直提醒到被静音，这时再收钱等于罚两次。要收钱由管理员发「扣额度 @某人」手动扣，那句是显式动作，会进审计日志。"
+  },
+  "freeman_price": {
+    "type": "int",
+    "description": "「自由人」售价",
+    "default": 500,
+    "hint": "买了之后改名不再受字数与符号限制，机器人也不再管他的群名片。"
+  },
+  "title_price": {
+    "type": "int",
+    "description": "改一次群头衔的价格",
+    "default": 100,
+    "hint": "买的是「一次修改权」：进了背包后发「头衔 想要的字」消耗一次，内容自己定。想再改就再买。"
   },
   "draw_per": {
     "description": "每多少条发言获得一次抽奖机会",
     "type": "int",
     "default": 100,
-    "slider": { "min": 10, "max": 500, "step": 10 }
+    "slider": {
+      "min": 10,
+      "max": 500,
+      "step": 10
+    }
   },
   "draw_min": {
     "description": "抽奖最低额度",
     "type": "int",
-    "default": 1
+    "default": 10,
+    "hint": "默认 10。抽奖券的售价按这个区间的期望值自动算，不用另配。"
   },
   "draw_max": {
     "description": "抽奖最高额度",
     "type": "int",
-    "default": 5
+    "default": 20,
+    "hint": "默认 20。"
   },
   "draw_bonus_chance": {
     "description": "抽奖暴击概率",
     "type": "float",
-    "default": 0.1,
-    "slider": { "min": 0, "max": 1, "step": 0.01 },
-    "hint": "0 表示关闭暴击。命中时按下面的暴击额度发放。"
+    "default": 0.0,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.01
+    },
+    "hint": "默认 0（不暴击），保证抽奖收益就落在 10~20 之间。调大之后会有「额外奖励」，收益上限跟着抬高。"
   },
   "draw_bonus_amount": {
     "description": "暴击额外增加的额度",
@@ -68,59 +235,83 @@
     "description": "禁言默认时长（分钟）",
     "type": "int",
     "default": 10,
-    "slider": { "min": 1, "max": 1440, "step": 1 },
+    "slider": {
+      "min": 1,
+      "max": 1440,
+      "step": 1
+    },
     "hint": "「禁言 @某人」不写时长时用这个值。写「禁言 @某人 1小时」仍然按写的算。上限 30 天。"
+  },
+  "rank_message_enabled": {
+    "type": "bool",
+    "description": "开启发言榜",
+    "default": false,
+    "hint": "关掉时「发言榜」这个口令完全失效，群里发它会被当成普通聊天，不会解释为什么。人少的群不用开。"
   },
   "log_retention_days": {
     "description": "额度流水与操作日志保留天数",
     "type": "int",
     "default": 180,
-    "slider": { "min": 0, "max": 1095, "step": 30 },
+    "slider": {
+      "min": 0,
+      "max": 1095,
+      "step": 30
+    },
     "hint": "0 表示永久保留。每天最多自动清理一次；「累计发言」存在成员表里，不受影响。"
   },
   "stats_retention_days": {
     "description": "按天发言统计保留天数",
     "type": "int",
     "default": 730,
-    "slider": { "min": 0, "max": 1825, "step": 30 },
+    "slider": {
+      "min": 0,
+      "max": 1825,
+      "step": 30
+    },
     "hint": "只影响按天明细（今日/本月需要它），累计数不受影响。0 表示永久保留。"
   },
   "info_triggers": {
     "description": "个人信息卡触发词",
     "type": "string",
-    "default": "查,我的信息,名片",
-    "hint": "英文逗号分隔。默认「查」；想用单个字母也可以填 i。"
+    "default": "查,我的信息,我的卡片",
+    "hint": "英文逗号分隔。默认「查」；想用单个字母也可以填 i。「名片」这两个字留给名片皮肤口令了，别填进来。"
   },
   "help_style": {
     "description": "帮助菜单发送方式",
     "type": "string",
     "default": "forward",
-    "options": ["forward", "text"],
-    "labels": ["合并转发（点开查看，防刷屏）", "直接发文字"],
-    "hint": "合并转发需要协议端支持 OneBot 群合并转发。若发送失败可切换为文字。"
+    "options": [
+      "forward",
+      "text"
+    ],
+    "labels": [
+      "合并转发（一条聊天记录，点开看全部）",
+      "直接发文字（会很长）"
+    ],
+    "hint": "「帮助」会把日常和娱乐两页口令整份列出。走合并转发是一条消息、点开才展开，不会刷屏；选「直接发文字」就是一口气铺满屏幕，适合只在私聊里用。"
   },
-  "card_bg_path": {
-    "description": "信息卡背景图路径",
+  "image_root": {
+    "description": "图片素材根目录",
     "type": "string",
-    "default": "assets/card_bg.png",
-    "hint": "相对路径基于插件目录，也可填绝对路径。替换成自己的立绘背景即可，建议比例 1200x680。"
+    "default": "assets/images",
+    "hint": "这个目录下有三个子目录：checkin（签到运势图，随机抽一张）、catalog（表情图鉴，按文件名顺序发）、cards（名片皮肤，文件名就是商品名）。填绝对路径可以指向服务器上任意图库。"
+  },
+  "card_skin_price": {
+    "description": "名片默认售价",
+    "type": "int",
+    "default": 50,
+    "slider": {
+      "min": 0,
+      "max": 5000,
+      "step": 50
+    },
+    "hint": "统一价，默认 50。个别名片想卖别的价：把图命名为「樱花@300.png」，文件名里的价优先。"
   },
   "card_font_path": {
     "description": "信息卡字体路径",
     "type": "string",
     "default": "assets/fonts/LXGWWenKai-Medium.ttf",
     "hint": "留空或文件不存在时会自动回退到系统中文字体。"
-  },
-  "card_show_qq": {
-    "description": "信息卡上显示 QQ 号",
-    "type": "bool",
-    "default": false
-  },
-  "card_show_avatar": {
-    "description": "信息卡右侧显示 QQ 头像",
-    "type": "bool",
-    "default": true,
-    "hint": "从 q1.qlogo.cn 拉 640px 头像，圆形裁切。拉取失败会自动画名字首字占位，不会空着。"
   },
   "meme_api_base_url": {
     "description": "表情生成服务地址",
@@ -131,22 +322,34 @@
   "meme_cost": {
     "description": "做一张表情扣多少额度",
     "type": "int",
-    "default": 1,
-    "slider": { "min": 0, "max": 20, "step": 1 },
-    "hint": "做成之后才扣，失败不扣。设 0 表示免费。查模板列表、看详情不扣额度。"
+    "default": 3,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "默认 3。做成之后才扣：服务连不上、图下载失败、参数不对，一分不扣。"
   },
   "meme_timeout": {
     "description": "表情生成超时秒数",
     "type": "int",
     "default": 30,
-    "slider": { "min": 5, "max": 120, "step": 5 },
+    "slider": {
+      "min": 5,
+      "max": 120,
+      "step": 5
+    },
     "hint": "动图模板比较慢，经常超时就调大。"
   },
   "meme_max_image_mb": {
     "description": "单张素材图大小上限 (MB)",
     "type": "int",
     "default": 10,
-    "slider": { "min": 1, "max": 50, "step": 1 },
+    "slider": {
+      "min": 1,
+      "max": 50,
+      "step": 1
+    },
     "hint": "群里偶尔有人发很大的原图，超过就放弃这张并提示，不会把内存吃光。"
   },
   "meme_auto_avatar": {
@@ -161,16 +364,125 @@
     "default": true,
     "hint": "很多模板自带「你好」之类的默认文字，关掉就必须每次手写。"
   },
+  "meme_catalog_size": {
+    "description": "表情列表兜底版一页放多少个模板",
+    "type": "int",
+    "default": 60,
+    "hint": "只在 assets/images/catalog/ 里没放图时生效：那时「表情列表」退回文字清单，这个数字决定一页列多少个模板名。放了自己做的图鉴图之后，这个配置就不起作用了，图是一张一张发的。"
+  },
+  "checkin_enabled": {
+    "description": "开启每日签到",
+    "type": "bool",
+    "default": true,
+    "hint": "签到只发文字 + 一张运势图，不画卡片。图从 assets/images/checkin 里按种子随机抽，同一天同一人永远是同一张。"
+  },
+  "checkin_image": {
+    "description": "签到带运势图",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉就只发文字。图片文件夹是空的时候会自动降级成纯文字，不需要手动关。"
+  },
+  "checkin_base_min": {
+    "description": "签到基础额度下限",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "和下面的上限一起决定签到能拿多少，默认 3。"
+  },
+  "checkin_base_max": {
+    "description": "签到基础额度上限",
+    "type": "int",
+    "default": 10,
+    "slider": {
+      "min": 1,
+      "max": 200,
+      "step": 1
+    },
+    "hint": "默认 10。写反了也不炸，会以上限为准拉平。"
+  },
+  "checkin_streak_bonus": {
+    "description": "连签每天额外加成",
+    "type": "int",
+    "default": 0,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "默认 0 —— 签到收益就落在上面那个 3~10 的区间里，连签只影响称号和里程碑，不额外发钱。想让老群友多拿可以调大。"
+  },
+  "checkin_streak_cap": {
+    "description": "连签加成封顶天数",
+    "type": "int",
+    "default": 10,
+    "slider": {
+      "min": 1,
+      "max": 365,
+      "step": 1
+    },
+    "hint": "超过这个天数不再叠加。封顶是为了不让签了一年的老群友收益高到谁都追不上。"
+  },
+  "checkin_bot_name": {
+    "description": "签到卡落款名字",
+    "type": "string",
+    "default": "群助手",
+    "hint": "卡片上「— 某某」那个署名填这里，改成你家机器人的名字即可。"
+  },
+  "checkin_double_price": {
+    "description": "双倍卡售价",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 0,
+      "max": 300,
+      "step": 1
+    },
+    "hint": "双倍卡把下一次签到额度翻倍。默认 6，略低于一次签到的平均值（3~10 的中间是 6.5），买的人有得赚才会买；卖得比期望高就没人买了。"
+  },
+  "checkin_double_limit": {
+    "description": "双倍卡每日限购",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "0 表示不限购。强烈建议保持限购——不限购等于用额度换更多额度，会变成刷分漏洞。"
+  },
+  "checkin_ticket_limit": {
+    "description": "抽奖券每日限购",
+    "type": "int",
+    "default": 5,
+    "slider": {
+      "min": 0,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "抽奖券的价格不在这里配，而是自动按「抽奖区间的平均值 + 暴击期望」算出来，改了抽奖数值券价会跟着变，不会出现套利空间。"
+  },
   "owner_default_level": {
     "description": "QQ 群主默认权限等级",
     "type": "int",
     "default": 4,
-    "slider": { "min": 1, "max": 4, "step": 1 }
+    "slider": {
+      "min": 1,
+      "max": 4,
+      "step": 1
+    }
   },
   "admin_default_level": {
     "description": "QQ 管理员默认权限等级",
     "type": "int",
     "default": 3,
-    "slider": { "min": 1, "max": 4, "step": 1 }
+    "slider": {
+      "min": 1,
+      "max": 4,
+      "step": 1
+    }
   }
 }

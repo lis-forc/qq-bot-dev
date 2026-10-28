@@ -13,6 +13,7 @@ from astrbot.api import logger
 
 from ..core.command import Command, CommandEnv, HelpEntry, exact
 from ..core.context import PluginContext
+from ..utils import deco
 
 
 async def today(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
@@ -31,7 +32,7 @@ async def count_message(ctx: PluginContext, event, group_id: str, sender_id: str
         return
     if ctx.config.notify_draw_ready and result.get("draws_gained"):
         yield event.plain_result(
-            "🎟 抽奖机会 +1\n"
+            deco.head("抽奖机会 +1", "stats") + "\n"
             f"抽奖进度：{result.get('msg_progress')} / {ctx.config.draw_per}\n"
             "发送「抽奖」试试手气"
         )
@@ -43,6 +44,6 @@ COMMANDS = [
         matcher=exact(("今日", "发言", "统计", "今日发言", "我的发言")),
         handler=today,
         perm_short="今日",
-        help=(HelpEntry("今日", "发言统计", page="base", order=42, slot="wallet"),),
+        help=(HelpEntry("今日", "发言统计", page="base", order=42, slot="wallet", group="额度与统计"),),
     ),
 ]

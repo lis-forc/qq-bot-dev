@@ -1,26 +1,97 @@
-"""帮助菜单：从命令注册表生成，不再手写。
+"""口令清单：只列口令，不列解释。
 
-这是这次重构最实际的收益 —— 新加一个功能，只要在 registry.py 里登记时
-写了 help 条目，菜单和权限页就自动带上它。不会再出现「功能做了但
-群里没人知道怎么用」。
+改版思路（第四版）
+------------------
+前三版分别是：手写三段文字 → 从注册表生成 → 每页渲染成一张图。
+这版回到文字，而且**把每条口令后面的解释全删了**，理由是：
 
-排版规则（为了和原来的三段式菜单保持一致）：
-- 有说明的条目 → `用法` + 换行缩进两格的说明；
-- 没有说明的条目（管理页）→ 只列用法，紧凑排；
-- 相邻且 slot 相同的条目合并成一行，用 ` / ` 连用法、`、` 连说明，
-  于是「额度 / 抽奖 / 今日」自然合成一条。
+- 解释是写给「第一次看菜单的人」的，但真正会翻菜单的人是「已经知道要什么、
+  只是想确认怎么拼」的人。他需要的是能直接抄的字符串。
+- 一条一行、行首缩进两格之后，20 多条口令只占半屏，比「口令 + 解释」
+  那种一行挤两段话的排版好扫得多。
+- 解释删了之后，**菜单本身就成了唯一的用法说明书**，所以每一条的写法
+  必须是「照着发就能用」的完整形式（带参数的那种要带占位名）。
+
+排版靠三样东西：emoji 当分组记号、`=` 当分界、缩进当层次。
+
+    🔥 群助手 · 日常口令
+    ==========================
+    📅 签到
+      签到
+      签到记录
+      ...
+
+为什么 emoji 只出现在行首、分界只用 `=`：`utils/text.py` 的 `table()`
+按显示宽度补空格对齐，emoji 的实际宽度由客户端字体决定，进表格会把列推歪。
+这一版没有表格了，但规矩保留 —— 将来谁想在这里加表格，不会踩到同一个坑。
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.api.message_components import Node, Nodes, Plain
+from astrbot.api.message_components import Plain
 
 from ..core.command import HelpEntry
 from ..core.context import PluginContext
 from ..core.services import Permission
+from ..utils.forward import build_forward
+from ..utils import deco
+from ..utils.meta import read_meta
+
+# 分界线的长度。QQ 手机端一屏大约 20 个汉字宽，26 个 `=` 刚好比标题长一点，
+# 看起来是「一条线」而不是「一段横线」。
+RULE = "=" * 26
+
+# 每一条口令前面的缩进。两个半角空格 = 一个汉字宽，层级刚好看得出来。
+INDENT = "  "
+
+# 每一组前面挂哪个表情。键是 HelpEntry.group 的值。
+GROUP_MARK = {
+    "签到": "checkin",
+    "我的信息": "profile",
+    "额度与统计": "quota",
+    "商店": "shop",
+    "资料": "edit",
+    "菜单": "titles",
+    "做一张表情": "meme",
+    # 娱乐页两块都用同一个记号会显得像复制粘贴，找模板换成「翻查」那个脸。
+    "找模板": "search",
+    "排行": "stats",
+}
+
+# 分块顺序。不在表里的组排在后面，所以新加组不用改这里也能显示。
+GROUP_ORDER = {
+    "base": ["签到", "我的信息", "额度与统计", "排行", "商店", "资料", "菜单"],
+    "fun": ["做一张表情", "找模板"],
+    "admin": [],
+}
+
+# 每一块的页头：记号 / 标题。
+BLOCK_HEAD = {
+    "base": ("base", "日常口令"),
+    "fun": ("fun", "娱乐口令"),
+    "admin": ("admin", "管理口令"),
+}
+
+# 页脚只留一行「怎么用」。多一行就变成解释了，而解释是这一版要删的东西。
+BLOCK_FOOT = {
+    "base": "零前缀，直接说",
+    "fun": "表情只是开头，更多玩法陆续上",
+    "admin": "群主 4 级 · 管理员 3 级 · 详细规则看管理台",
+}
+
+# 娱乐页末尾的占位块：告诉人「这里还有东西没上线」，
+# 比留一片空白好 —— 空白会被读成「就这么点功能」。
+BLOCK_TAIL = {
+    "fun": (f"{deco.mark('fun')} 敬请期待", f"{INDENT}更多玩法正在路上"),
+}
+
+# 一条文字消息能舒服读完的行数。超过就走合并转发 ——
+# 不是「发不出去」，而是「铺满屏幕没人读」。
+SINGLE_MESSAGE_LINES = 26
 
 
 def _commands():
@@ -34,28 +105,16 @@ def _commands():
 
     return COMMANDS
 
-# 权限页那段话是「权限模型」的说明，不是命令索引，所以固定手写。
-PERM_FOOTER = (
-    "QQ 群主默认 4 级，QQ 管理员默认 3 级。\n"
-    "授权不看身份，只看等级：任何被授到 4 级的人都能继续授权别人。"
-)
 
-def _admin_footer(ctx: PluginContext) -> str:
-    """管理页脚注。带配置值的写成函数，配置一改菜单跟着变。"""
-    return (
-        f"禁言默认单位是分钟，最长 30 天；不写时长默认 {ctx.config.default_mute_minutes} 分钟。\n"
-        "「禁言」只禁被 @ 的那一个人；全群禁言是单独的口令，要群主权限。\n"
-        "踢人加「拉黑」，对方就不能再申请入群。"
-    )
-
-
+# ---------------------------------------------------------------- 文案填充
 def _tokens(ctx: PluginContext) -> dict[str, Any]:
-    """帮助文案里可以引用的配置值。改配置，菜单里的数字跟着变。"""
+    """菜单文案里可以引用的配置值。改配置，菜单里的数字跟着变。"""
     return {
         "cur": ctx.config.currency_name,
         "rename_cost": ctx.config.rename_cost,
         "draw_per": ctx.config.draw_per,
         "welcome_quota": ctx.config.welcome_quota,
+        "skin_price": ctx.config.card_skin_price,
     }
 
 
@@ -69,114 +128,194 @@ def _fill(text: str, tokens: dict[str, Any]) -> str:
         return text
 
 
-def _entries(page: str) -> list[HelpEntry]:
-    """取出某一页的所有条目，按 order 排序（与匹配顺序解耦）。"""
-    collected = [entry for cmd in _commands() for entry in cmd.help if entry.page == page]
+def _active(cmd: Any, ctx: PluginContext) -> bool:
+    """这条命令现在算不算存在。开关关掉的功能不出现在菜单里。"""
+    hook = getattr(cmd, "enabled", None)
+    if hook is None:
+        return True
+    try:
+        return bool(hook(ctx))
+    except Exception:  # 判断本身出错时宁可不显示，也别显示一个用不了的
+        return False
+
+
+def _entries(ctx: PluginContext, page: str, level: int = 4) -> list[HelpEntry]:
+    """取出某一页的条目，按 order 排序（与匹配顺序解耦）。
+
+    ``level`` 是**看菜单这个人的等级**：每条命令可以声明自己需要几级
+    （``HelpEntry.level``），超过就不出现在他的菜单里。所以普通群员发
+    「帮助」看不到「额度排行」「禁言」，而群主看到的是完整一份 ——
+    菜单本身就是「你能做什么」的答案，不该列出一堆点了会报权限不足的条目。
+    """
+    collected = [
+        entry
+        for cmd in _commands()
+        if _active(cmd, ctx)
+        for entry in cmd.help
+        if entry.page == page and entry.level <= level
+    ]
     return sorted(collected, key=lambda entry: entry.order)
 
 
-def _group(entries: list[HelpEntry]) -> list[list[HelpEntry]]:
-    """把相邻且同 slot 的条目并成一组。slot 为空则各自成组。"""
-    groups: list[list[HelpEntry]] = []
+def _usages(entries: list[HelpEntry], tokens: dict[str, Any]) -> list[str]:
+    """组内每一条的用法，一行一个。空用法的条目（纯占位）直接跳过。"""
+    out: list[str] = []
     for entry in entries:
-        if (
-            entry.slot
-            and groups
-            and groups[-1][0].slot == entry.slot
-        ):
-            groups[-1].append(entry)
-        else:
-            groups.append([entry])
-    return groups
+        usage = _fill(entry.usage, tokens).strip()
+        if usage:
+            out.append(INDENT + usage)
+    return out
 
 
-def _render(entries: list[HelpEntry], tokens: dict[str, Any], compact_style: bool) -> str:
-    blocks = []
-    for group in _group(entries):
-        usage = " / ".join(_fill(e.usage, tokens) for e in group if e.usage)
-        if not usage:
+# ---------------------------------------------------------------- 组块
+@dataclass
+class Block:
+    """一块口令：一个标题 + 一段可以直接发出去的文字。"""
+
+    key: str
+    title: str
+    text: str
+
+
+def _admin_body(ctx: PluginContext, tokens: dict[str, Any], level: int = 4) -> str:
+    """管理块：一个权限等级一组。
+
+    等级本身就是最好的分块依据 —— 看管理菜单的人想问的第一个问题
+    永远是「我能不能用」，而不是「这个功能属于哪一类」。
+    所以高于自己等级的那些组整块不出现，不是留着让人试。
+    """
+    entries = [entry for entry in _entries(ctx, "admin", level) if entry.usage]
+    if not entries:
+        return ""
+
+    chunks: list[str] = []
+    for at in sorted({entry.level for entry in entries}):
+        rows = _usages([entry for entry in entries if entry.level == at], tokens)
+        if not rows:
             continue
-        desc = "、".join(_fill(e.desc, tokens) for e in group if e.desc)
-        if compact_style or not desc:
-            blocks.append(usage)
-        else:
-            blocks.append(f"{usage}\n  {desc}")
-    return "\n\n".join(blocks) if not compact_style else "\n".join(blocks)
+        chunks.append("\n".join([f"〔{at} 级 · {Permission.level_name(at)}〕", *rows]))
+    return "\n\n".join(chunks)
 
 
-def _base_page(ctx: PluginContext, tokens: dict[str, Any]) -> str:
-    body = _render(_entries("base"), tokens, compact_style=False)
-    footer = (
-        f"新手礼：首次发言自动到账 {ctx.config.welcome_quota} {ctx.config.currency_name}；"
-        f"每发言 {ctx.config.draw_per} 条攒一次抽奖。"
-    )
-    return f"🧩 群助手 · 基础\n\n{body}\n\n{footer}"
-
-
-def _admin_page(ctx: PluginContext, tokens: dict[str, Any]) -> str:
-    entries = _entries("admin")
-    chunks = []
-    for level in sorted({e.level for e in entries}):
-        usages = _render([e for e in entries if e.level == level], tokens, compact_style=True)
-        if not usages:
+def _generic_body(
+    ctx: PluginContext, which: str, tokens: dict[str, Any], level: int = 4
+) -> str:
+    """base / fun：按 group 分块，组内按 order 排。"""
+    buckets: dict[str, list[HelpEntry]] = {}
+    for entry in _entries(ctx, which, level):
+        if not entry.usage:
             continue
-        chunks.append(f"【{level} 级 · {Permission.level_name(level)}】\n{usages}")
-    body = "\n\n".join(chunks)
-    return f"🛡 群助手 · 管理\n\n{body}\n\n{_admin_footer(ctx)}"
+        buckets.setdefault(entry.group or "其它", []).append(entry)
+
+    preferred = GROUP_ORDER.get(which, [])
+    ordered = [name for name in preferred if name in buckets]
+    ordered += [name for name in buckets if name not in preferred]
+
+    chunks: list[str] = []
+    for name in ordered:
+        rows = _usages(sorted(buckets[name], key=lambda entry: entry.order), tokens)
+        if not rows:
+            continue
+        head = deco.head(name, GROUP_MARK.get(name, "base"))
+        chunks.append("\n".join([head, *rows]))
+    return "\n\n".join(chunks)
 
 
-def _perm_page(ctx: PluginContext) -> str:
-    """按等级列出各等级能用的功能，全部来自注册表。"""
-    by_level: dict[int, list[str]] = {}
-    # 两趟：先按命令顺序收 primary，再补 perm_extra（比如「代改名」要排在
-    # 禁言/解禁之后，因为它其实是「改名」的一个高权限用法）。
-    for cmd in _commands():
-        if cmd.perm_short:
-            by_level.setdefault(cmd.level, []).append(cmd.perm_short)
-    for cmd in _commands():
-        for level, short in cmd.perm_extra:
-            by_level.setdefault(level, []).append(short)
+def make_block(ctx: PluginContext, which: str, level: int = 4) -> Block | None:
+    """组装一块。没内容返回 None —— 调用方据此跳过空块。
 
-    chunks = []
-    for level in sorted(by_level):
-        names = " / ".join(by_level[level])
-        chunks.append(f"{level} {Permission.level_name(level)}\n  {names}")
-    return f"📖 群助手 · 权限\n\n" + "\n\n".join(chunks) + f"\n\n{PERM_FOOTER}"
-
-
-def pages(ctx: PluginContext) -> list[tuple[str, str]]:
-    """三页菜单。返回 (标题, 正文)，标题用于合并转发的节点名。"""
+    ``level`` 默认 4（完整一份），因为自测和「关于」类调用没有具体的人；
+    真正发给群友时必须传调用者的等级。
+    """
     tokens = _tokens(ctx)
-    return [
-        ("群助手 · 基础", _base_page(ctx, tokens)),
-        ("群助手 · 管理", _admin_page(ctx, tokens)),
-        ("群助手 · 权限", _perm_page(ctx)),
-    ]
-
-
-def _forward_chain(event, items: list[tuple[str, str]]) -> list | None:
-    """帮助打包成合并转发，点开才展开，避免刷屏。"""
-    try:
-        uin = str(event.get_self_id() or "10000")
-        nodes = [Node(uin=uin, name=title, content=[Plain(body)]) for title, body in items]
-        if len(nodes) == 1:
-            return [nodes[0]]
-        try:
-            return [Nodes(nodes=nodes)]
-        except TypeError:
-            return [Nodes(nodes)]
-    except Exception as exc:
-        logger.error(f"[群助手] 构造合并转发失败，改用文字: {exc}")
+    body = (
+        _admin_body(ctx, tokens, level)
+        if which == "admin"
+        else _generic_body(ctx, which, tokens, level)
+    )
+    if not body:
         return None
 
+    mark_key, title = BLOCK_HEAD[which]
+    brand = ctx.gallery_brand
+    head = f"{deco.mark(mark_key)} {brand} · {title}\n{RULE}"
 
-async def send_help(ctx: PluginContext, event):
-    """发帮助。合并转发失败就降级成三条普通消息。"""
-    items = pages(ctx)
+    parts = [head, body]
+    tail = BLOCK_TAIL.get(which) if which != "admin" else None
+    if tail:
+        parts.append(f"{tail[0]}\n{tail[1]}")
+    foot = BLOCK_FOOT.get(which, "")
+    if foot:
+        parts.append(RULE)
+        parts.append(foot)
+    return Block(key=which, title=f"{brand} · {title}", text="\n\n".join(parts))
+
+
+async def _viewer_level(ctx: PluginContext, event: Any) -> int:
+    """看菜单这个人是几级。查不出来就按 1 级算 —— 少显示几条，不会误导。"""
+    try:
+        group_id = str(event.get_group_id() or "")
+        sender_id = str(event.get_sender_id() or "")
+        if not group_id or not sender_id:
+            return 1
+        member = ctx.db.get_member(group_id, sender_id)
+        return await ctx.permission.level(event, group_id, sender_id, member)
+    except Exception as exc:  # 权限接口挂了不该让「帮助」打不开
+        logger.warning(f"[群助手] 读菜单查看者等级失败，按 1 级处理: {exc}")
+        return 1
+
+
+async def send_menu(ctx: PluginContext, event: Any, which: str = "base"):
+    """发口令清单。长就打包成一条聊天记录，短就直接发。
+
+    为什么坚持「多块才转发」：只有一块的时候套转发是多余的 ——
+    群友要多点一下才能看见唯一一屏字，反而更麻烦。
+    """
+    level = await _viewer_level(ctx, event)
+    picked = ["base", "fun"] if which == "all" else [which]
+    blocks = [block for block in (make_block(ctx, key, level) for key in picked) if block]
+    if not blocks:
+        yield event.plain_result("这类口令暂时没有，发「帮助」看看别的")
+        return
+
+    joined = "\n\n".join(block.text for block in blocks)
+    if which == "all":
+        joined += f"\n\n{deco.mark('admin')} 管理口令：发「管理」"
+
+    if joined.count("\n") + 1 <= SINGLE_MESSAGE_LINES:
+        yield event.plain_result(joined)
+        return
+
     if ctx.config.help_style == "forward":
-        chain = _forward_chain(event, items)
+        items = [(block.title, [Plain(block.text)]) for block in blocks]
+        if which == "all":
+            items.append(
+                (f"{ctx.gallery_brand} · 还有", [Plain("管理口令：发「管理」")])
+            )
+        chain = build_forward(event, items)
         if chain:
             yield event.chain_result(chain)
             return
-    for _, body in items:
-        yield event.plain_result(body)
+        logger.warning("[群助手] 口令清单转发构造失败，改用长文本")
+
+    yield event.plain_result(joined)
+
+
+async def send_help(ctx: PluginContext, event: Any):
+    """默认发全部口令。"""
+    async for reply in send_menu(ctx, event, "all"):
+        yield reply
+
+
+def pages(ctx: PluginContext) -> list[tuple[str, str]]:
+    """三块纯文字，(标题, 正文)。自测直接断言文案内容，不用起机器人。"""
+    return [
+        (block.title, block.text)
+        for block in (make_block(ctx, key) for key in ("base", "fun", "admin"))
+        if block is not None
+    ]
+
+
+def version(ctx: PluginContext) -> str:
+    """从 metadata.yaml 读版本号。留着给「关于」类文案用。"""
+    return read_meta(ctx.plugin_dir, "version")

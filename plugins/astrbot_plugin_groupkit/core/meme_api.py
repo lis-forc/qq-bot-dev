@@ -35,12 +35,16 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
 from astrbot.api import logger
+
+# 中日韩统一表意文字。用来判断一个关键词「是不是给人看的中文名」。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
 
 # AstrBot 跑在 aiocqhttp 上，aiohttp 一定在。这里做可选导入只是为了让
 # 自测脚本能在裸 Python 环境里跑起来 —— 没有 aiohttp 时给出人话提示，
@@ -70,22 +74,82 @@ class MemeInfo:
     max_texts: int = 0
     default_texts: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    # 这次拿到的数据里到底有没有参数信息。None = 不知道，按数值推断；
+    # True/False = 接口明确给了/没给。模板清单接口有些版本只回 key，
+    # 此时 min/max 全是 0，但那不是「不需要图」，是「不知道」。
+    # 两者混为一谈会让图鉴上写满「不用素材」，比不写还误导。
+    params_known: bool | None = None
+
+    @property
+    def title(self) -> str:
+        """给群友看的名字：优先中文关键词，没有再退回 key。
+
+        这是整个表情功能最要紧的一条规则 —— 群友只会说「摸头」，
+        不会去记 `petpet`。meme-generator 的每个模板都带一组
+        keywords，第一个中文的那个就是它在中文化生态里的正式叫法。
+
+        两个例外都踩过：key 自己就是中文的（部分服务端直接拿中文当 key），
+        这时直接用它；一个中文关键词都没有的纯英文模板，退回第一个别名
+        而不是 key —— 别名至少是给人念的，key 可能带下划线和版本后缀。
+        """
+        if _CJK_RE.search(self.key):
+            return self.key
+        for keyword in self.keywords:
+            if keyword != self.key and _CJK_RE.search(keyword):
+                return keyword
+        for keyword in self.keywords:
+            if keyword != self.key:
+                return keyword
+        return self.key
+
+    @property
+    def aliases(self) -> list[str]:
+        """除显示名以外的叫法，详情页里列出来方便用户换词重试。"""
+        title = self.title
+        return [kw for kw in self.keywords if kw not in (self.key, title)]
 
     @property
     def needs_image(self) -> bool:
         return self.max_images > 0
 
+    def _params_ok(self) -> bool:
+        """参数到底可不可信。
+
+        显式声明优先；没声明就按数值推断 —— 只要有一个非零，说明
+        确实拿到了参数（不然不会凭空出现数字）。
+        """
+        if self.params_known is not None:
+            return self.params_known
+        return bool(self.min_images or self.max_images or self.min_texts or self.max_texts)
+
     def image_span(self) -> str:
+        if not self._params_ok():
+            return "参数未知"
         if self.min_images == self.max_images:
             return f"{self.min_images} 张图"
         return f"{self.min_images}~{self.max_images} 张图"
 
     def text_span(self) -> str:
+        if not self._params_ok():
+            return ""
         if self.max_texts == 0:
             return "不要文字"
         if self.min_texts == self.max_texts:
             return f"{self.min_texts} 段文字"
         return f"{self.min_texts}~{self.max_texts} 段文字"
+
+    def brief(self) -> str:
+        """图鉴格子里那行小字：一眼能看出这个模板要准备什么。"""
+        if not self._params_ok():
+            return ""
+        parts: list[str] = []
+        if self.max_images:
+            parts.append(f"{self.max_images} 图" if self.min_images == self.max_images
+                         else f"{self.min_images}~{self.max_images} 图")
+        if self.max_texts:
+            parts.append(f"{self.max_texts} 字" if self.min_texts == self.max_texts
+                         else f"{self.min_texts}~{self.max_texts} 字")
+        return " · ".join(parts) if parts else "不用素材"
 
 
 def _as_list(value: Any) -> list:
@@ -116,6 +180,10 @@ def _parse_info(key: str, payload: dict[str, Any]) -> MemeInfo:
         if isinstance(candidate, dict):
             params.update(candidate)
     merged = {**payload, **params}
+    params_known = any(
+        name in merged
+        for name in ("min_images", "max_images", "min_texts", "max_texts")
+    )
 
     raw_keywords = payload.get("keywords")
     if not raw_keywords:
@@ -139,6 +207,7 @@ def _parse_info(key: str, payload: dict[str, Any]) -> MemeInfo:
         max_texts=_as_int(merged.get("max_texts"), 0),
         default_texts=[str(item) for item in _as_list(merged.get("default_texts"))],
         raw=payload,
+        params_known=params_known,
     )
 
 

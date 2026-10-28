@@ -141,6 +141,82 @@ async def set_whole_ban(event, group_id: Any, enable: bool) -> bool:
     return succeeded(result)
 
 
+async def set_group_card(event, group_id: Any, user_id: Any, card: str) -> bool:
+    """改群名片。
+
+    这是整套昵称系统的落地点：库里存的只是「名字」，真正显示在群成员
+    列表里的是群名片。改名、加性别记号、把被人手改回去的名片再改回来，
+    走的都是这一个动作。
+
+    ``card`` 允许为空串（QQ 里等于「清空群名片，显示 QQ 昵称」）——
+    但业务层不会这么用，因为清空之后我们的记号也没了。
+    """
+    result = await call(
+        event,
+        "set_group_card",
+        group_id=int(group_id),
+        user_id=int(user_id),
+        card=str(card or ""),
+    )
+    return succeeded(result)
+
+
+async def get_group_owner(event, group_id: Any) -> str | None:
+    """从成员列表里找群主的 QQ 号。找不到（接口失败 / 没有 owner）返回 None。
+
+    群专属头衔只有群主能改 —— 机器人改不了别人的头衔，所以「头衔」的
+    流程是提醒群主人肉去改，这一步就是找「提醒谁」。
+    """
+    result = await call(event, "get_group_member_list", group_id=_group_number(group_id))
+    if not succeeded(result):
+        return None
+    # 两种形态都要认：aiocqhttp 通常把成员列表直接返回（list），
+    # 有些协议端包一层 {"data": [...]}。
+    members = result if isinstance(result, list) else None
+    if members is None and isinstance(result, dict):
+        members = result.get("data")
+    if not isinstance(members, list):
+        return None
+    for member in members:
+        if not isinstance(member, dict):
+            continue
+        if str(member.get("role") or "") == "owner":
+            uid = str(member.get("user_id") or "")
+            return uid or None
+    return None
+
+
+# ---------------------------------------------------------------- 主动发消息
+def _group_number(group_id: Any) -> Any:
+    """OneBot 要的是数字群号，但群号万一不是纯数字也别让整条命令崩掉。"""
+    text = str(group_id or "").strip()
+    return int(text) if text.isdigit() else text
+
+
+async def send_group(event, group_id: Any, text: str, at: Any = None) -> bool:
+    """主动往群里发一句话（可选 @ 某人）。
+
+    口令的回复走 ``yield``，但入群欢迎、验证超时这类发生在事件之外的
+    消息没有「当前这条消息」可以回复，只能主动发。所以单独备一个。
+
+    ``at`` 给 QQ 号时拼成 at 段 + 文本段；@ 和文字之间补一个空格，
+    不然客户端会把「@昵称」和后面的字粘在一起。
+    """
+    message: list[dict[str, Any]] = []
+    body = str(text or "")
+    if at:
+        message.append({"type": "at", "data": {"qq": str(at)}})
+        body = " " + body.lstrip()
+    if body:
+        message.append({"type": "text", "data": {"text": body}})
+    if not message:
+        return False
+    result = await call(
+        event, "send_group_msg", group_id=_group_number(group_id), message=message
+    )
+    return succeeded(result)
+
+
 # ---------------------------------------------------------------- @ 目标提取
 def get_at_targets(event) -> list[str]:
     """提取消息里 @ 的人（QQ 号）。

@@ -89,3 +89,44 @@ def target_hint(event, fmt: str) -> str:
     这时回一句「格式：禁言 @某人」等于骗人 —— 他明明 @ 了人。
     """
     return "⚠️ 不能对自己或机器人操作" if onebot.get_at_targets(event) else fmt
+
+
+# ---------------------------------------------------------------- 发送者身份
+def _sender(event) -> Any:
+    return raw_get(getattr(event, "message_obj", None), "sender")
+
+
+def sender_card(event) -> str:
+    """发送者**这一刻**的群名片。零成本 —— 消息报文里就带着。
+
+    为什么要这个：昵称守卫要在每条消息上判断「他现在的群名片还是不是
+    我们期望的那张」。如果去调 ``get_group_member_info``，一个人一天
+    发一百条就是一百次接口调用，协议端会被打成筛子；而发送者信息本来
+    就跟在消息里，读一下字段是免费的。
+
+    ``card`` 为空时退回 ``nickname``：QQ 里没设群名片的人，群里显示的
+    就是昵称，两者在「群名片长什么样」这件事上是等价的。
+    """
+    sender = _sender(event)
+    for key in ("card", "nickname"):
+        value = raw_get(sender, key)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def sender_sex(event) -> str:
+    """发送者资料里的性别（OneBot 原样：male / female / unknown）。
+
+    和 ``sender_card`` 一样是白捡的字段。库里 sex 为空时拿它补 ——
+    不然新成员的名字前面会一直挂着一个「未设定」的 🧸，
+    直到有人翻了他的信息卡为止。
+    """
+    return str(raw_get(_sender(event), "sex") or "").strip()
+
+
+def sender_nickname(event) -> str:
+    """发送者的 QQ 昵称（不含群名片）。兜底称呼用。"""
+    return str(raw_get(_sender(event), "nickname") or "").strip()
+
