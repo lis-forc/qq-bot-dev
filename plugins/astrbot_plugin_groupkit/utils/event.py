@@ -126,6 +126,20 @@ def sender_sex(event) -> str:
     return str(raw_get(_sender(event), "sex") or "").strip()
 
 
+def sender_role(event) -> str:
+    """发送者在群里的角色（owner / admin / member），拿不到返回空串。
+
+    和 ``sender_card`` 一样是白捡的字段。昵称守卫拿它把群主排除在外 ——
+    QQ 里管理员改不了群主的群名片，与其每条消息都发一次注定失败的请求、
+    在日志里刷一行警告，不如一开始就不碰。
+
+    拿不到时返回空串，守卫照常往下走：那种情况下 ``set_group_card`` 会
+    失败，而失败本来就是**只记日志、不在群里说**的（见 ``guard`` 的
+    「改不动就放手」）。所以读不到角色最坏只是退回现状，不会打扰人。
+    """
+    return str(raw_get(_sender(event), "role") or "").strip()
+
+
 def sender_nickname(event) -> str:
     """发送者的 QQ 昵称（不含群名片）。兜底称呼用。"""
     return str(raw_get(_sender(event), "nickname") or "").strip()

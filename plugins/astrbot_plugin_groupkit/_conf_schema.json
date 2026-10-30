@@ -119,12 +119,6 @@
     "default": false,
     "hint": "默认不允许。号码、年份、生日都是「个人信息」而不是名字。"
   },
-  "nick_force": {
-    "type": "bool",
-    "description": "强制新成员改名",
-    "default": true,
-    "hint": "开：进群时在欢迎语里提醒，之后每次发言都提醒，提醒够次数就静音一会儿。关：只加记号，不催。"
-  },
   "nick_join_text": {
     "type": "text",
     "description": "入群时追加的改名提示（可留空）",
@@ -157,6 +151,111 @@
       "step": 1
     },
     "hint": "目的是打断他一下，不是惩罚，所以默认 1 分钟——他去改个名就自动恢复了。"
+  },
+  "mute_card_price": {
+    "type": "int",
+    "description": "禁言卡价格",
+    "default": 30,
+    "slider": {
+      "min": 0,
+      "max": 500,
+      "step": 5
+    },
+    "hint": "一张卡禁别人 10 秒。只对 3 级以下的人生效 —— 钱买不到管理权。"
+  },
+  "rename_card_price": {
+    "type": "int",
+    "description": "改名卡价格",
+    "default": 50,
+    "slider": {
+      "min": 0,
+      "max": 500,
+      "step": 5
+    },
+    "hint": "普通成员改一次名要消耗一张。3 级以上不受限制，可以直接改。"
+  },
+  "monopoly_cost": {
+    "type": "int",
+    "description": "大富翁入场费",
+    "default": 5,
+    "slider": {
+      "min": 0,
+      "max": 200,
+      "step": 1
+    },
+    "hint": "掷一次骰子的门票。六个点数的期望收益约 +4.17，门票 5 时每局期望净 -0.83；设 0 就是纯赚。"
+  },
+  "monopoly_cooldown_hours": {
+    "type": "int",
+    "description": "大富翁冷却（小时）",
+    "default": 3,
+    "slider": {
+      "min": 0,
+      "max": 24,
+      "step": 1
+    },
+    "hint": "同一人两次之间至少隔这么久。设 0 = 不冷却（配合期望为负也不至于刷爆）。"
+  },
+  "monopoly_jackpot": {
+    "type": "int",
+    "description": "终极大奖金额",
+    "default": 300,
+    "slider": {
+      "min": 0,
+      "max": 2000,
+      "step": 50
+    },
+    "hint": "只在 6 点后按概率触发。金额越大，概率就越该压低，否则会通胀。"
+  },
+  "monopoly_jackpot_chance": {
+    "type": "int",
+    "description": "终极大奖概率（%）",
+    "default": 1,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "只挂在 6 点后面，所以真实概率 = 1/6 × 这个数。默认 1% 等于约 0.17%，五百多局才出一次。"
+  },
+  "rank_max_page": {
+    "type": "int",
+    "description": "排行榜最多翻到第几页",
+    "default": 5,
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "每页 10 人。「发言榜2」看第 11~20 名，最多到这一页。"
+  },
+  "rank_member_enabled": {
+    "type": "bool",
+    "description": "普通成员可看日发言榜",
+    "default": true,
+    "hint": "关掉之后只有 2 级以上能看。日榜不涉及余额，默认开着。"
+  },
+  "fake_cost": {
+    "type": "int",
+    "description": "「假装消息」每次消耗额度",
+    "default": 3,
+    "slider": {
+      "min": 0,
+      "max": 200,
+      "step": 1
+    },
+    "hint": "用别人的头像和昵称发一条合并转发。这是唯一能替别人发言的功能，收点钱是门槛；设 0 就是免费开放。"
+  },
+  "red_packet_count": {
+    "type": "int",
+    "description": "发红包默认拆成几个",
+    "default": 5,
+    "slider": {
+      "min": 1,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "群友发「发红包 55」时不写个数就用这个。每个包至少 1 额度，所以不能超过总额。"
   },
   "rename_cost": {
     "description": "改名消耗额度",

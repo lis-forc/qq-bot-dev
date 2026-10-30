@@ -37,6 +37,7 @@ const state = {
   dirty: new Map(),    // 改过但还没保存的字段：key -> 新值
 
   assets: null,
+  commands: null,      // 口令大全：按等级分组，数据源是命令注册表
 
   overview: null,
   groups: [],
@@ -1090,6 +1091,87 @@ async function loadStorage() {
   }
 }
 
+/* ================================================================ 口令大全 */
+
+async function loadCommands() {
+  const body = $("commandsBody");
+  if (body) body.innerHTML = `<div class="empty">正在读取口令…</div>`;
+  try {
+    state.commands = await apiGet("commands");
+    renderCommands();
+  } catch (error) {
+    state.commands = { groups: [], total: 0 };
+    renderCommands();
+    toast(`口令表读取失败：${error.message}`, "error");
+  }
+}
+
+function renderCommands() {
+  const data = state.commands || {};
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const body = $("commandsBody");
+  const note = $("commandsNote");
+  const legend = $("commandsLegend");
+  const tabNote = $("tabCommandsNote");
+
+  if (note) note.textContent = `${data.total || 0} 条 · 按等级分组`;
+  if (tabNote) tabNote.textContent = `${data.total || 0} 条`;
+
+  if (legend) {
+    // 等级即权限：看这张表的人第一个问题永远是「我能不能用」，
+    // 所以把 1~4 级的含义直接铺在标题下面，不用再点开什么地方。
+    legend.innerHTML = [
+      ["1", "所有群员"],
+      ["2", "助手"],
+      ["3", "管理"],
+      ["4", "群主"],
+    ]
+      .map(
+        ([level, name]) =>
+          `<span class="legend-item"><b class="lvl lvl-${level}">Lv.${level}</b>${esc(name)}</span>`
+      )
+      .join("");
+  }
+
+  if (!body) return;
+  if (!groups.length) {
+    body.innerHTML = `<div class="empty">没有读到口令，可能是插件还没加载完</div>`;
+    return;
+  }
+
+  body.innerHTML = groups
+    .map((group) => {
+      const items = Array.isArray(group.items) ? group.items : [];
+      const rows = items
+        .map((item) => {
+          const usage = esc(item.usage);
+          const desc = item.desc ? esc(item.desc) : "";
+          const tag = item.active ? "" : `<span class="cmd-off">已关闭</span>`;
+          const where = item.group ? `<span class="cmd-group">${esc(item.group)}</span>` : "";
+          return `<tr class="${item.active ? "" : "is-off"}">
+            <td class="cmd-usage"><code>${usage}</code>${tag}</td>
+            <td class="cmd-desc">${desc}</td>
+            <td class="cmd-where">${where}</td>
+          </tr>`;
+        })
+        .join("");
+      return `<div class="cmd-block">
+        <div class="cmd-head">
+          <b class="lvl lvl-${group.level}">Lv.${group.level}</b>
+          <span class="cmd-title">${esc(group.title || "")}</span>
+          <span class="cmd-count">${group.count || items.length} 条</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>怎么发</th><th>做什么</th><th>分组</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
 /* ================================================================ 切视图 */
 
 const DATA_SUBS = {
@@ -1114,6 +1196,7 @@ function switchView(view) {
     if (state.assets) renderAssets();
     else loadAssets();
   }
+  if (view === "commands") loadCommands();
   if (view === "data") switchSub(state.dataSub);
 }
 

@@ -29,6 +29,10 @@ from ..utils import deco
 from ..utils import event as ev
 from ..utils import nickname as nick_rule
 from ..utils import onebot
+
+# 改名卡的 item_id。和商店里那件商品的 item_id 必须一致 ——
+# 这两个字符串分居两个文件，写错了买到的卡就永远用不上。
+RENAME_CARD = "rename"
 from ..utils.router import compact, strip_at
 from . import nickname as nick_flow
 
@@ -37,6 +41,12 @@ def info_matcher(ctx: PluginContext, text: str, lower: str) -> Match | None:
     """`查` / `查 @某人` / `查 123456`。
 
     触发词来自配置（`info_triggers`），可以随时加别名，所以不用固定前缀匹配。
+
+    **@ 那一支曾经漏了。** 文档一直写着「查 @某人」，但实现只认「纯口令」
+    和「口令 + 数字」，于是 `查 @某人` 谁也接不住，群友看到的是「没反应」。
+    这里补上：只要后面跟的是 ``@`` 就算命中，具体是谁交给消息组件
+    （`ev.first_at`）—— 文本里的 @ 名字可能带空格（群名片是「🦊 陈嘉豪」），
+    在这里解析它只会自找麻烦。
     """
     triggers = ctx.config.info_triggers
     if lower in triggers:
@@ -45,6 +55,8 @@ def info_matcher(ctx: PluginContext, text: str, lower: str) -> Match | None:
         found = re.fullmatch(rf"{re.escape(trigger)}\s*(\d{{5,12}})", lower)
         if found:
             return Match(args=found.group(1), value=found.group(1))
+        if re.fullmatch(rf"{re.escape(trigger)}\s*@.+", lower):
+            return Match()
     return None
 
 
@@ -110,8 +122,22 @@ def text_card(data: dict) -> str:
 
 # ---------------------------------------------------------------- 口令处理
 async def info(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """信息卡：`查` 看自己，`查 @某人` / `查 123456` 看别人。"""
-    target = env.args or ev.first_at(env.event, env.sender_id) or env.sender_id
+    """信息卡：`查` 看自己，`查 @某人` / `查 123456` 看别人（2 级起）。
+
+    **看别人要 2 级。** 信息卡上有余额、关系、注册天数，是别人的档案；
+    普通成员只能看自己那张。判断放在这里而不是 Command.level，是因为
+    同一个命令有两种用法 —— 看自己永远允许。
+    """
+    target = (
+        ev.first_at(env.event, env.sender_id)
+        or (env.args or "").strip()
+        or env.sender_id
+    )
+    if str(target) != str(env.sender_id):
+        warn = await require_level(ctx, env, 2)
+        if warn:
+            yield env.event.plain_result(warn)
+            return
     async for reply in card_reply(
         ctx, env.event, env.group_id, env.sender_id, target, env.member
     ):
@@ -119,31 +145,82 @@ async def info(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
 
 
 async def rename(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """改名。改自己不占额度也不用权限；代别人改要 2 级。
+    """改名。
 
-    **不扣额度。** 改名在这个群里是「进来就要做的事」，新人不改还会被
-    一直提醒到静音，这时再收钱等于罚两次。要收钱由管理员发「扣额度」，
-    那是显式动作，谁扣的、扣多少都进审计日志。
+    两条不同的路，分界线是**等级**，不是钱：
+
+    - **3 级以上（管理、群主）**：直接改，自己改或代别人改都行。
+      管人的手上有这个权限，是因为他们本来就在管事。
+    - **1~2 级（普通成员、助手）**：改自己要消耗一张**改名卡**
+      （商店「权限卡」里买，一张 50）。代别人改不行 —— 那是 3 级的事。
+
+    为什么用卡而不是直接扣额度：卡在背包里能看见、能囤、能当礼物，
+    而「改一次扣 50」在群里完全没有存在感，还容易被误解成罚款。
     """
+    cfg = ctx.config
     targets = ev.at_targets(env.event, env.sender_id)
+
     if targets:
-        warn = await require_level(ctx, env, 2)
+        # 代别人改：3 级起，不消耗卡。
+        warn = await require_level(ctx, env, 3)
         if warn:
             yield env.event.plain_result(warn)
             return
         target_id = targets[0]
     else:
         target_id = env.sender_id
+        # 给自己改：3 级以下要卡。等级要连手动授权一起算，所以走
+        # permission.level 而不是看群角色。
+        level = await ctx.permission.level(
+            env.event, env.group_id, env.sender_id, env.member
+        )
+        if level < 3:
+            # **第一次登记不收卡。** 名字还没定下来的人就是新人，而新人
+            # 正被欢迎语催着改名 —— 这时候再让他先去买卡，就成了死循环：
+            # 没名字 → 被催 → 买不起卡 → 改不了 → 一直催到静音。
+            # 所以卡的收费点定在「改第二次及以后」。
+            has_name = bool(str((env.member or {}).get("display_name") or ""))
+            if has_name:
+                stock = await asyncio.to_thread(
+                    ctx.db.bag_count, env.group_id, env.sender_id, "permit", RENAME_CARD
+                )
+                if stock <= 0:
+                    yield env.event.plain_result(
+                        "🪪 改名要一张改名卡\n"
+                        f"发「购买 改名卡」（{cfg.rename_card_price} {cfg.currency_name}）"
+                    )
+                    return
+
+    # 改名**之前**的快照：apply_name 会把新名字写进库，之后再看
+    # env.member 就分不清「他本来有没有名字」了。
+    had_name = bool(str((env.member or {}).get("display_name") or ""))
 
     name = compact(strip_at(env.args))
     if not name:
-        yield env.event.plain_result(nick_flow.format_hint(ctx.config))
+        yield env.event.plain_result(nick_flow.format_hint(cfg))
         return
-    yield env.event.plain_result(
-        await nick_flow.apply_name(
-            ctx, env.event, env.group_id, target_id, name, operator_id=env.sender_id
-        )
+
+    # 先执行改名，成功了才扣卡 —— 名字不合规（太短、带符号）时不该白花一张。
+    said = await nick_flow.apply_name(
+        ctx, env.event, env.group_id, target_id, name, operator_id=env.sender_id
     )
+    if not said.startswith("✅"):
+        yield env.event.plain_result(said)
+        return
+
+    if not targets:
+        level = await ctx.permission.level(
+            env.event, env.group_id, env.sender_id, env.member
+        )
+        if level < 3 and had_name:
+            await asyncio.to_thread(
+                ctx.db.bag_take, env.group_id, env.sender_id, "permit", RENAME_CARD
+            )
+            left = await asyncio.to_thread(
+                ctx.db.bag_count, env.group_id, env.sender_id, "permit", RENAME_CARD
+            )
+            said += f"\n🪪 用掉一张改名卡（还剩 {left} 张）"
+    yield env.event.plain_result(said)
 
 
 async def hobby(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
@@ -166,7 +243,7 @@ async def sex(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
     """
     targets = ev.at_targets(env.event, env.sender_id)
     if targets:
-        warn = await require_level(ctx, env, 2)
+        warn = await require_level(ctx, env, 3)
         if warn:
             yield env.event.plain_result(warn)
             return
@@ -263,7 +340,11 @@ COMMANDS = [
         perm_short="信息卡",
         help=(
             HelpEntry("查", "个人信息卡（图片）", page="base", order=10, group="我的信息"),
-            HelpEntry("查 @某人  /  查 QQ号", "看别人的", page="base", order=11, group="我的信息"),
+            # level=2：普通成员照抄这条会撞权限墙，那比不显示更让人恼火。
+            HelpEntry(
+                "查 @某人  /  查 QQ号", "看别人的信息卡（2 级起）",
+                page="base", level=2, order=11, group="我的信息",
+            ),
         ),
     ),
     Command(
@@ -271,10 +352,10 @@ COMMANDS = [
         matcher=prefix(("改名", "改名字", "改个名")),
         handler=rename,
         perm_short="改名",
-        perm_extra=((2, "代改名"),),
+        perm_extra=((3, "代改名"),),
         help=(
-            HelpEntry("改名 李四", "改名字，顺带改群名片（不花额度）", page="base", order=20, group="资料"),
-            HelpEntry("改名 @某人 李四", "替他改名", page="admin", level=2, order=30),
+            HelpEntry("改名 李四", "改名字；3 级以下要消耗一张改名卡", page="base", order=20, group="资料"),
+            HelpEntry("改名 @某人 李四", "替他改名（3 级起，不用卡）", page="admin", level=3, order=30),
         ),
     ),
     Command(
@@ -288,12 +369,12 @@ COMMANDS = [
         matcher=prefix(("性别", "设置性别", "改性别")),
         handler=sex,
         perm_short="性别",
-        perm_extra=((2, "代改性别"),),
+        perm_extra=((3, "代改性别"),),
         help=(
             HelpEntry(
                 "性别 男", "改信息卡上的性别（男 / 女 / 保密）", page="base", order=35, group="资料"
             ),
-            HelpEntry("性别 @某人 女", "替他改性别", page="admin", level=2, order=31),
+            HelpEntry("性别 @某人 女", "替他改性别（3 级起）", page="admin", level=3, order=31),
         ),
     ),
     Command(

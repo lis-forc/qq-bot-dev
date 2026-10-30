@@ -943,7 +943,7 @@ def main() -> None:
     black_kick = [p for a, p in calls_black if a == "set_group_kick"]
     check("拉黑真的传给协议端", black_kick and black_kick[0].get("reject_add_request") is True,
           str(black_kick))
-    check("拉黑提示说明后果", any("不能再申请" in str(r) for r in kick_calls2), str(kick_calls2))
+    check("拉黑提示说明后果", any("自动踢" in str(r) for r in kick_calls2), str(kick_calls2))
 
     async def _say(text: str, target: str | None = None, role: str = "admin"):
         """把一句话真的喂给分发器，返回 (回复列表, 协议端调用记录)。"""
@@ -1093,6 +1093,80 @@ def main() -> None:
 
     check("引号里的内容不被切开", sticker_mod.split_tokens('a "b c" d') == ["a", "b c", "d"],
           str(sticker_mod.split_tokens('a "b c" d')))
+
+    # ---- @ 到的人群名片带性别记号（「🦊 陈嘉豪」）时的解析 ----
+    # 真实故障：「表情 摸 @🦊 陈嘉豪」报「需要 0 段文字，现在给了 1 段」。
+    # 原因是 message_str 把 @ 渲染成 `@🦊 陈嘉豪`，中间那个空格让 `@\S+`
+    # 只吃掉 `@🦊`，把「陈嘉豪」留在参数里当成了要写在图上的文字。
+    MARKS = ("🦊", "🐰", "🧸")
+    blank_event = types.SimpleNamespace(
+        message_obj=types.SimpleNamespace(message=[])
+    )
+    check(
+        "剥 @ 时连性别记号一起吃干净",
+        sticker_mod.strip_mentions("摸 @🦊 陈嘉豪", blank_event, MARKS) == "摸",
+        sticker_mod.strip_mentions("摸 @🦊 陈嘉豪", blank_event, MARKS),
+    )
+    check(
+        "@ 在文字后面也不留残渣",
+        sticker_mod.strip_mentions("举牌 你好 @🐰 小红", blank_event, MARKS) == "举牌 你好",
+        sticker_mod.strip_mentions("举牌 你好 @🐰 小红", blank_event, MARKS),
+    )
+    check(
+        "没带记号的 @ 照样能剥",
+        sticker_mod.strip_mentions("摸 @小明", blank_event, MARKS) == "摸",
+        sticker_mod.strip_mentions("摸 @小明", blank_event, MARKS),
+    )
+
+    # 正解：直接从消息链取纯文本，@ 段天然不在里面，一个字符都不用猜。
+    class Plain:  # 名字必须是 Plain —— chain_text 按类名认
+        def __init__(self, text):
+            self.text = text
+
+    class At:
+        def __init__(self, qq):
+            self.qq = qq
+
+    chain_event = types.SimpleNamespace(
+        message_obj=types.SimpleNamespace(
+            message=[Plain("表情 摸 "), At("10086"), Plain("")]
+        )
+    )
+    check("消息链取纯文本时跳过 @", sticker_mod.chain_text(chain_event) == "表情 摸 ",
+          repr(sticker_mod.chain_text(chain_event)))
+    check(
+        "消息链 + 前缀得到干净参数",
+        sticker_mod._strip_make_prefix(sticker_mod.chain_text(chain_event)) == "摸",
+        repr(sticker_mod._strip_make_prefix(sticker_mod.chain_text(chain_event))),
+    )
+
+    # ---- 假装消息：解析与收费 ----
+    fake_mod = importlib.import_module("gk_plugin.domains.fake")
+    check("假装消息切前缀", fake_mod._strip_prefix("假装消息 你好呀") == "你好呀",
+          repr(fake_mod._strip_prefix("假装消息 你好呀")))
+    check("假装消息冒号写法也认", fake_mod._strip_prefix("假装消息：住手") == "住手",
+          repr(fake_mod._strip_prefix("假装消息：住手")))
+    check("不是假装消息就不接", fake_mod._strip_prefix("你好呀") == "")
+    # 消息链里的 Plain 段可能不带尾随空格，拼起来是「假装消息你好」——
+    # 要求分隔符的话，这种情况会被判成「没写正文」，回一句用法提示。
+    check("假装消息紧跟正文也认",
+          fake_mod._strip_prefix("假装消息你好") == "你好",
+          repr(fake_mod._strip_prefix("假装消息你好")))
+
+    no_at = types.SimpleNamespace(
+        message_obj=types.SimpleNamespace(message=[], raw_message={}),
+        get_self_id=lambda: "999999",
+    )
+    check(
+        "没有 @ 时认开头的 QQ 号",
+        fake_mod.split_target("123456789 你好呀", no_at, "8008") == ("123456789", "你好呀"),
+        str(fake_mod.split_target("123456789 你好呀", no_at, "8008")),
+    )
+    check(
+        "既没 @ 也没 QQ 号就不行",
+        fake_mod.split_target("你好呀", no_at, "8008")[0] is None,
+        str(fake_mod.split_target("你好呀", no_at, "8008")),
+    )
 
     parsed = sticker_mod.parse_args(["#circle", "左", "自己", "https://x/y.png", "你好"])
     check("选项 #circle 解析成 True", parsed.options.get("circle") is True, str(parsed.options))
@@ -1764,19 +1838,22 @@ def main() -> None:
         text_card.replace("\n", " | "),
     )
     check("签到文字有运势", "宜 " in text_card and "忌 " in text_card)
-    check("签到文字有连签累计", f"连续 {payload['streak']} 天" in text_card)
+    check("签到文字有连签累计", f"连签 {payload['streak']} 天" in text_card)
     check("签到文字首行是页头", text_card.splitlines()[0].startswith("📅"),
           text_card.splitlines()[0])
-    check("签到分界线成对出现", text_card.count(checkin_domain.RULE) == 2,
-          str(text_card.count(checkin_domain.RULE)))
-    # 中间的空行不能被吃掉：运势和奖励之间要断开，挤在一坨就看不清结构。
-    check("签到文字保留了空行", "\n\n" in text_card)
+    # 新排版把两条分界线砍了：上面一行「谁 · 哪天」，下面三行结果，
+    # 那张运势图就夹在中间。分界线只会把本来就很短的一段切碎。
+    check("签到文字不再堆分界线", checkin_domain.RULE not in text_card,
+          text_card.replace("\n", " | "))
+    check("签到文字压得很短", text_card.count("\n") + 1 <= 6,
+          f"{text_card.count(chr(10)) + 1} 行")
 
     # 极端数值：十亿级余额 + 十万天连签。这里不要求「好看」，只要求
     # 字段一个不少 —— 数字一长就被吞掉，是最难被发现的那类回归。
     crazy = dict(payload, reward=10**9, balance=10**12, streak=10**5, total_days=10**6)
     crazy_text = checkin_domain._checkin_text(crazy, G, U)
-    check("签到文字极端数值不崩", crazy_text.count(checkin_domain.RULE) == 2)
+    check("签到文字极端数值不崩", isinstance(crazy_text, str) and bool(crazy_text),
+          crazy_text.replace("\n", " | "))
     check(
         "签到文字极端数值不丢字段",
         f"{10**12}" in crazy_text and f"{10**6}" in crazy_text,
@@ -2017,14 +2094,13 @@ def main() -> None:
         return [x for x in _collect(admin_mod.grant(plugin.ctx, env_g)) if isinstance(x, str)]
 
     pdb.set_permission("1001", grant_from, None)  # 角色决定等级
-    out_g = _grant("admin", 3)
-    check("管理员不能发 3 级", any("只能设 1~2 级" in x for x in out_g), " | ".join(out_g))
+    # 授权锁死在 4 级：3 级能授权的话，一次越权就能自我繁殖出一个 3 级。
     out_g = _grant("admin", 2)
-    check("管理员可以设 2 级",
-          pdb.get_member("1001", grantee)["permission_level"] == 2, " | ".join(out_g))
-    pdb.set_permission("1001", grantee, 3)
-    out_g = _grant("admin", 1)
-    check("管理员动不了 3 级以上", any("动不了" in x for x in out_g), " | ".join(out_g))
+    check("管理员不能授权（只有 4 级能）",
+          any("只给 4 级" in x for x in out_g), " | ".join(out_g))
+    check("管理员授权不落库",
+          pdb.get_member("1001", grantee)["permission_level"] is None,
+          str(pdb.get_member("1001", grantee)["permission_level"]))
     pdb.set_permission("1001", grantee, None)
     out_g = _grant("owner", 4)
     check("群主可以发 4 级",
@@ -2174,8 +2250,50 @@ def main() -> None:
     check("前端调的接口后端都注册了", {
         "overview", "groups", "trend", "ranking", "members",
         "checkin-feed", "quota-feed", "storage", "assets", "config",
-        "config-save", "member-update",
+        "commands", "config-save", "member-update",
     } == set(paths), str(sorted(set(paths))))
+
+    # ---- 红包：分配算法 + 流转 ----
+    # 只有一个包能同时挂着（用户要求），所以「没抢完不能发新的」是硬规则。
+    check("红包只剩一个人时全拿走", db_mod.split_packet(37, 1) == 37)
+    check("红包每人至少 1", db_mod.split_packet(5, 5) >= 1)
+    rdb = db_mod.Database(TMP / "db_red")
+    RG = "7007"
+    ok, reason, pid = rdb.red_packet_create(RG, "A", 100, 6)
+    check("能开出红包", ok and pid > 0, reason)
+    ok2, reason2, _ = rdb.red_packet_create(RG, "B", 10, 2)
+    check("没抢完不能开第二个", (not ok2) and reason2 == "busy", reason2)
+
+    grabbed = [rdb.red_packet_grab(RG, f"U{i}") for i in range(6)]
+    check("六个人都抢到了", all(st == "ok" for st, _, _ in grabbed),
+          str([s for s, _, _ in grabbed]))
+    # 守恒是红包最容易出 bug 的地方：多给一毛少给一毛，账就对不上。
+    check("红包总金额守恒", sum(a for _, a, _ in grabbed) == 100,
+          str(sum(a for _, a, _ in grabbed)))
+    check("抢完就不剩了", rdb.red_packet_open(RG) is None)
+
+    ok, _, _ = rdb.red_packet_create(RG, "A", 20, 3)
+    first = rdb.red_packet_grab(RG, "U9")
+    again = rdb.red_packet_grab(RG, "U9")
+    check("同一个人只能抢一次", first[0] == "ok" and again[0] == "taken",
+          f"{first[0]} / {again[0]}")
+    check("没有包时抢是 empty", rdb.red_packet_grab("no-such-group", "U0")[0] == "empty")
+
+    # ---- 黑名单：拉黑 → 进群自动踢 ----
+    bdb = db_mod.Database(TMP / "db_black")
+    BG = "8008"
+    check("默认不在黑名单", not bdb.is_blacklisted(BG, "666"))
+    bdb.blacklist_add(BG, "666", "admin")
+    check("拉黑后能查到", bdb.is_blacklisted(BG, "666"))
+    # 每群独立：在 A 群被拉黑，不该影响 B 群。
+    check("别的群不受影响", not bdb.is_blacklisted("other-group", "666"))
+    check("黑名单列表里有他",
+          [row["user_id"] for row in bdb.blacklist_list(BG)] == ["666"],
+          str(bdb.blacklist_list(BG)))
+    check("解除拉黑返回真", bdb.blacklist_remove(BG, "666") is True)
+    check("解除后查不到", not bdb.is_blacklisted(BG, "666"))
+    check("重复解除返回假（要说清不在名单里）",
+          bdb.blacklist_remove(BG, "666") is False)
 
     # ---- 聚合查询：空库必须返回 0 / 空列表，不能是 None ----
     wdb = db_mod.Database(TMP / "db_web")
@@ -2232,6 +2350,30 @@ def main() -> None:
     check("空称号返回空串", api._title("") == "")
     bare = web_mod.WebApi(wdb, config_mod.PluginConfig({}), "x")
     check("没有 checkin 服务时降级为空", bare._title("nightowl") == "")
+
+    # ---- 口令大全：面板上必须看得到每一条，包括群里从不解释的那些 ----
+    # 用户的原话是「管理员的权限和指令在面板上压根就没说，给额度那个
+    # 指令我也不知道在哪」。所以这里断言的是**具体条目存在**，而不是
+    # 「条数大于 20」—— 数字对得上但恰好少了那一条，数字断言看不出来。
+    catalog = web_mod.command_catalog(config_mod.PluginConfig({}))
+    all_usages = [
+        item["usage"] for group in catalog["groups"] for item in group["items"]
+    ]
+    joined = "\n".join(all_usages)
+    check("口令表里有一分钱不用花的给额度", "给额度" in joined, joined[:120])
+    check("口令表里有发额度（4 级印钱）", "发额度" in joined)
+    check("口令表里有扣额度", "扣额度" in joined)
+    check("口令表里有授权", "授权" in joined)
+    check("口令表里有全群禁言", "全群禁言" in joined)
+    check("口令表里有改名与性别", "改名" in joined and "性别" in joined)
+    check(
+        "口令表覆盖 1 到 4 级",
+        {group["level"] for group in catalog["groups"]} == {1, 2, 3, 4},
+        str(sorted(group["level"] for group in catalog["groups"])),
+    )
+    check("口令表条目数等于各部分之和",
+          catalog["total"] == len(all_usages),
+          f'{catalog["total"]} vs {len(all_usages)}')
 
     # 表清单是「管理台能看到什么」的白名单，加表必须同时加进来 ——
     # 所以这里断言的是具体的表名，不是一个数字：数量对得上但少了一张
@@ -2664,16 +2806,16 @@ def main() -> None:
     check("只开欢迎时不登记验证", not welcome_mod.pending_count())
 
     # ---- 两个都关：什么都不发 ----
-    # 昵称的强制改名也要一起关，否则「只关欢迎和验证」仍然会发出一句改名提示。
+    # 昵称系统也要一起关，否则「只关欢迎和验证」仍然会发出一句改名提示。
     evt = JoinEvent()
     asyncio.run(flow({"welcome_enabled": False, "verify_enabled": False,
-                      "nick_force": False}, evt, []))
+                      "nick_enabled": False}, evt, []))
     check("三个开关都关时全程静默", evt.calls == [] or not evt.actions("send_group_msg"), str(evt.calls))
 
-    # ---- 只开强制改名：欢迎语关掉也要提醒一次 ----
+    # ---- 只开昵称系统：欢迎语关掉也要提醒一次改名 ----
     evt = JoinEvent()
     asyncio.run(flow({"welcome_enabled": False, "verify_enabled": False,
-                      "nick_force": True}, evt, []))
+                      "nick_enabled": True}, evt, []))
     said = evt.said()
     check("只开强制改名时也会说话", bool(said), str(evt.calls))
     check("改名提示里写了怎么改", "改名" in said, said)
@@ -2789,6 +2931,25 @@ def main() -> None:
     cmd_list = registry_mod.COMMANDS
     check("命令表非空", len(cmd_list) >= 16, str(len(cmd_list)))
     check("命令 key 不重复", len({c.key for c in cmd_list}) == len(cmd_list))
+
+    # 注册表漏一条**不会有任何报错**：命令写好了、帮助条目也写了、自测也测了
+    # 那个 handler，但群里发出去没人接。`给额度` 就这样丢了很久 ——
+    # 直到做面板口令表时才发现它对用户来说是「不存在」的。
+    # 所以逐个模块核对：每一份 COMMANDS 里的 key 都必须出现在总表里。
+    registry_keys = {c.key for c in cmd_list}
+    # 自己 import 而不是复用上面的变量：这几个模块在不同测试段里各有别名，
+    # 拼错一个就是 NameError 而不是断言失败，排查时会绕远路。
+    _mod_names = ("admin", "bag", "checkin", "fake", "monopoly", "profile",
+                  "quota", "rank", "redpacket", "shop", "stats", "sticker")
+    orphans = [
+        cmd.key
+        for _name in _mod_names
+        for cmd in getattr(
+            importlib.import_module(f"gk_plugin.domains.{_name}"), "COMMANDS", []
+        )
+        if cmd.key not in registry_keys
+    ]
+    check("每个模块的命令都进了总表", not orphans, str(orphans))
     check("每个命令都有帮助条目", all(c.help for c in cmd_list),
           str([c.key for c in cmd_list if not c.help]))
     # 管理命令必须在权限页可见：漏写 perm_short 的话，群里没人知道这个功能
@@ -2916,24 +3077,32 @@ def main() -> None:
     class NickEvent:
         """带 sender（群名片 + 性别）和记账协议端的假事件。"""
 
-        def __init__(self, card="", sex="unknown", role="admin", user_id="8008"):
+        def __init__(self, card="", sex="unknown", role="admin", user_id="8008", roles=None):
             self.calls: list[tuple[str, dict]] = []
             self.role = role
+            # roles 用来给「不同的人不同角色」—— 权限卡的规则是「只对 3 级
+            # 以下生效」，如果所有人都返回同一个 role，那条规则根本测不到。
+            self.roles = dict(roles or {})
             self.user_id = user_id
             self.bot = types.SimpleNamespace(api=self)
             self.message_obj = types.SimpleNamespace(
                 message=[],
                 raw_message={},
-                sender=types.SimpleNamespace(card=card, nickname="QQ昵称", sex=sex),
+                sender=types.SimpleNamespace(card=card, nickname="QQ昵称", sex=sex, role=role),
             )
 
         async def call_action(self, action, **params):
             self.calls.append((action, params))
             if action == "get_group_member_info":
+                target = str(params.get("user_id") or "")
                 return {
                     "status": "ok",
                     "retcode": 0,
-                    "data": {"role": self.role, "card": "", "nickname": "机器人"},
+                    "data": {
+                        "role": self.roles.get(target, self.role),
+                        "card": "",
+                        "nickname": "机器人",
+                    },
                 }
             return {"status": "ok", "retcode": 0, "data": None}
 
@@ -2964,10 +3133,14 @@ def main() -> None:
     ndb = db_mod.Database(TMP / "db_nick")
 
     def nick_ctx(**over):
-        """一套最小的 ctx：守卫只用到 config / db / profiles。"""
+        """一套最小的 ctx：守卫只用到 config / db / profiles，
+        权限卡那几条还要 permission（判断「3 级以下才要卡」）。"""
         cfg = config_mod.PluginConfig(over)
         return types.SimpleNamespace(
-            config=cfg, db=ndb, profiles=services_mod.ProfileService(ndb, cfg)
+            config=cfg,
+            db=ndb,
+            profiles=services_mod.ProfileService(ndb, cfg),
+            permission=services_mod.Permission(cfg),
         )
 
     plain_ctx = nick_ctx()
@@ -3050,13 +3223,37 @@ def main() -> None:
         nick_flow.guard(plain_ctx, ev, "1001", "9009", ndb.get_member("1001", "9009"))
     )
     check("被手改的名片改回来", ev.cards() == ["🦊 李四"], str(ev.cards()))
-    check("改回来时说了一句", "改回来了" in (prompt or ""), str(prompt))
+    check("改回来时说了一句", "已自动更新" in (prompt or ""), str(prompt))
     ev = NickEvent(card="李四", sex="male")
     again = asyncio.run(
         nick_flow.guard(plain_ctx, ev, "1001", "9009", ndb.get_member("1001", "9009"))
     )
     check("同一天不再重复提示", again is None, str(again))
     check("但名片照样改回来", ev.cards() == ["🦊 李四"], str(ev.cards()))
+
+    # ---- 守卫：自动采纳（新人没发过「改名」）也说同一句中性文案 ----
+    # 文案不能说「帮你改回来了」—— 他根本没改过，听不懂这句在说什么。
+    ndb.ensure_member("1001", "9100")
+    ev = NickEvent(card="小明", sex="male", user_id="9100")
+    prompt = asyncio.run(
+        nick_flow.guard(plain_ctx, ev, "1001", "9100", ndb.get_member("1001", "9100"))
+    )
+    check("自动采纳把名字写进库", ndb.get_member("1001", "9100")["display_name"] == "小明")
+    check("自动采纳给名片加了记号", ev.cards() == ["🦊 小明"], str(ev.cards()))
+    check("自动采纳的提示是中性文案", "已自动更新" in (prompt or ""), str(prompt))
+    check("提示不再说「帮你改回来了」", "帮你改回来了" not in (prompt or ""), str(prompt))
+
+    # ---- 守卫：群主不碰 ----
+    # QQ 里管理员改不了群主的群名片，守卫在开头就该绕开 —— 一次请求
+    # 都不发，也不写库。role 来自消息报文（NickEvent 的 sender 桩带上它）。
+    ndb.ensure_member("1001", "9200")
+    ev = NickEvent(card="李四", sex="male", user_id="9200", role="owner")
+    prompt = asyncio.run(
+        nick_flow.guard(plain_ctx, ev, "1001", "9200", ndb.get_member("1001", "9200"))
+    )
+    check("群主发言时守卫什么都不做",
+          prompt is None and not ev.cards() and not ev.mutes(), str(ev.calls))
+    check("群主的名字也不写库", ndb.get_member("1001", "9200")["display_name"] == "")
 
     # ---- 守卫：机器人不是管理员时不动手 ----
     nick_flow.forget_admin_cache()
@@ -3073,7 +3270,7 @@ def main() -> None:
     first = asyncio.run(
         nick_flow.guard(plain_ctx, ev, "1001", "7007", ndb.get_member("1001", "7007"))
     )
-    check("没改名会提醒", "名字还没登记" in (first or ""), str(first))
+    check("没改名会提醒", "名字还没定" in (first or ""), str(first))
     check("提醒里写了第几次", "1/3" in (first or ""), str(first))
     check("第一次不禁言", not ev.mutes(), str(ev.mutes()))
     check("提醒计数落库", ndb.get_member("1001", "7007")["nick_nag"] == 1)
@@ -3099,6 +3296,172 @@ def main() -> None:
     loose = asyncio.run(nick_flow.apply_name(off_ctx, ev, "1001", "7100", "🎸老王"))
     check("关掉昵称系统后可以取带符号的名字", "改名成功" in loose, loose)
 
+    # ---- 改名卡 / 禁言卡：钱买得到「玩」，买不到「权」 ----
+    def _plain_of(agen):
+        return "\n".join(item for item in _collect(agen) if isinstance(item, str))
+
+    def _cmd_env(uid: str, level: int, target: str = "", args: str = ""):
+        """造一个能喂给 handler 的 env：本人的手动等级 + 群里角色都是普通成员。
+
+        @ 目标走 ``raw_message`` 里的 at 段 —— 这是 OneBot 的第二种形态，
+        和最省事的桩（不用去构造 astrbot 的 At 类）。
+        """
+        ndb.ensure_member("1001", uid)
+        ndb.set_permission("1001", uid, level)
+        roles = {uid: "member", "999999": "admin"}
+        if target:
+            ndb.ensure_member("1001", target)
+            roles[target] = "member"
+        ev = NickEvent(card="", sex="male", role="member", user_id=uid, roles=roles)
+        if target:
+            ev.message_obj.raw_message = {
+                "message": [{"type": "at", "data": {"qq": target}}]
+            }
+        return types.SimpleNamespace(
+            event=ev,
+            group_id="1001",
+            sender_id=uid,
+            member=ndb.get_member("1001", uid),
+            args=args,
+            text="",
+        )
+
+    # 第一次登记不收卡：新人正被欢迎语催着改名，这时候再让他先买卡，
+    # 就变成「没名字 → 被催 → 买不起卡 → 改不了 → 一直催到静音」的死循环。
+    env_rename = _cmd_env("8301", 1, args="初名")
+    said = _plain_of(profile_mod.rename(plain_ctx, env_rename))
+    check("第一次改名不收卡",
+          "改名成功" in said and "改名卡" not in said, said.replace("\n", " | "))
+
+    # 有过名字之后，再改就要卡了
+    env_rename = _cmd_env("8301", 1, args="再改")
+    said = _plain_of(profile_mod.rename(plain_ctx, env_rename))
+    check("第二次改名要卡", "改名卡" in said, said.replace("\n", " | "))
+    check("没卡时名字没动",
+          ndb.get_member("1001", "8301")["display_name"] == "初名",
+          str(ndb.get_member("1001", "8301")["display_name"]))
+
+    ndb.bag_add("1001", "8301", "permit", "rename", 1)
+    env_rename = _cmd_env("8301", 1, args="再改")
+    said = _plain_of(profile_mod.rename(plain_ctx, env_rename))
+    check("有卡能改名", "改名成功" in said, said.replace("\n", " | "))
+    check("改名扣掉一张卡", ndb.bag_count("1001", "8301", "permit", "rename") == 0,
+          str(ndb.bag_count("1001", "8301", "permit", "rename")))
+
+    env_rename = _cmd_env("8102", 3, args="大老板")
+    said = _plain_of(profile_mod.rename(plain_ctx, env_rename))
+    check("3 级改名不用卡",
+          "改名成功" in said and "改名卡" not in said, said.replace("\n", " | "))
+
+    # 禁言卡：普通成员能对普通成员用，管理及以上不吃这张卡
+    env_mute = _cmd_env("8201", 1, target="9101")
+    said = _plain_of(bag_domain.use_mute_card(plain_ctx, env_mute))
+    check("没禁言卡不能用", "禁言卡" in said and "购买" in said, said.replace("\n", " | "))
+
+    ndb.bag_add("1001", "8201", "permit", "mute", 1)
+    env_mute = _cmd_env("8201", 1, target="9101")
+    said = _plain_of(bag_domain.use_mute_card(plain_ctx, env_mute))
+    check("有卡能禁言", "10 秒" in said, said.replace("\n", " | "))
+    check("禁言扣掉一张卡", ndb.bag_count("1001", "8201", "permit", "mute") == 0)
+
+    # 目标是 3 级：钱买不到管理权
+    ndb.bag_add("1001", "8201", "permit", "mute", 1)
+    env_mute = _cmd_env("8201", 1, target="9102")
+    ndb.set_permission("1001", "9102", 3)
+    said = _plain_of(bag_domain.use_mute_card(plain_ctx, env_mute))
+    check("禁言卡对管理员无效", "管理及以上" in said, said.replace("\n", " | "))
+    check("被拒时不扣卡", ndb.bag_count("1001", "8201", "permit", "mute") == 1,
+          str(ndb.bag_count("1001", "8201", "permit", "mute")))
+
+    # ---- 三条「不花卡」的路径：冒泡采纳 / 被催后改名 / 自己改名片 ----
+    # 改名卡只该收「已经有名字、还想再改」的人。名字还没定下来的人
+    # 无论走哪条路进来，都不该被卡住。
+    ndb.ensure_member("1001", "8401")
+    ev = NickEvent(card="阿花", sex="female", user_id="8401")
+    asyncio.run(
+        nick_flow.guard(plain_ctx, ev, "1001", "8401", ndb.get_member("1001", "8401"))
+    )
+    check("冒泡时名字合规就自动入库",
+          ndb.get_member("1001", "8401")["display_name"] == "阿花",
+          str(ndb.get_member("1001", "8401")["display_name"]))
+    check("冒泡入库不花改名卡",
+          ndb.bag_count("1001", "8401", "permit", "rename") == 0,
+          str(ndb.bag_count("1001", "8401", "permit", "rename")))
+
+    # 不合规：催，但**不入库**（入了库就等于默认接受了这个违规名字）
+    ndb.ensure_member("1001", "8402")
+    ev = NickEvent(card="老王123", sex="male", user_id="8402")
+    nagged = asyncio.run(
+        nick_flow.guard(plain_ctx, ev, "1001", "8402", ndb.get_member("1001", "8402"))
+    )
+    check("名字不合规不入库", ndb.get_member("1001", "8402")["display_name"] == "")
+    check("名字不合规会被催", "名字还没定" in (nagged or ""), str(nagged))
+
+    # 被催之后发「改名」：库里没有名字 → 第一次登记 → 不收卡
+    env_rename = _cmd_env("8402", 1, args="老王")
+    said = _plain_of(profile_mod.rename(plain_ctx, env_rename))
+    check("被催后改名不收卡",
+          "改名成功" in said and "改名卡" not in said, said.replace("\n", " | "))
+
+    # 被催之后**自己去改群名片**：下次冒泡照样自动入库，也不催
+    ndb.ensure_member("1001", "8403")
+    asyncio.run(
+        nick_flow.guard(
+            plain_ctx, NickEvent(card="🎸老王", sex="male", user_id="8403"),
+            "1001", "8403", ndb.get_member("1001", "8403"),
+        )
+    )
+    check("自己没改好之前不入库",
+          ndb.get_member("1001", "8403")["display_name"] == "")
+    fixed = asyncio.run(
+        nick_flow.guard(
+            plain_ctx, NickEvent(card="小王子", sex="male", user_id="8403"),
+            "1001", "8403", ndb.get_member("1001", "8403"),
+        )
+    )
+    check("他自己把名片改合规后自动入库",
+          ndb.get_member("1001", "8403")["display_name"] == "小王子",
+          str(ndb.get_member("1001", "8403")["display_name"]))
+    check("这条路径也不催", "名字还没定" not in (fixed or ""), str(fixed))
+    check("这条路径也不花卡",
+          ndb.bag_count("1001", "8403", "permit", "rename") == 0)
+
+    # ---- 「看别人」的三种口令：带 @ 必须能被接住 ----
+    # 这三个都曾经不认 @：群友发出去完全没反应，看起来像机器人挂了。
+    # `额度` / `背包` 用的是整句精确匹配，`查` 的匹配器只认「触发词 + 数字」。
+    mention = command_mod.exact_or_mention(("额度", "余额"))
+    stub = types.SimpleNamespace()
+    check("额度 @某人 能命中", mention(stub, "额度 @小明", "额度 @小明") is not None)
+    check("额度 单独能命中", mention(stub, "额度", "额度") is not None)
+    check("额度怎么涨 不被吃掉", mention(stub, "额度怎么涨", "额度怎么涨") is None)
+    check("额度记录 不被吃掉", mention(stub, "额度记录", "额度记录") is None)
+
+    check("查 @某人 能命中",
+          profile_mod.info_matcher(plain_ctx, "查 @小明", "查 @小明") is not None)
+    check("查 @带记号的昵称 也命中",
+          profile_mod.info_matcher(plain_ctx, "查 @🦊 陈嘉豪", "查 @🦊 陈嘉豪") is not None,
+          "群名片带空格时 @ 后面还能接")
+    found = profile_mod.info_matcher(plain_ctx, "查 123456", "查 123456")
+    check("查 123456 能命中", found is not None and found.args == "123456")
+    check("查户口 不被吃掉",
+          profile_mod.info_matcher(plain_ctx, "查户口", "查户口") is None)
+
+    # 权限：普通成员只能看自己那份，三条路都要拦住
+    env_info = _cmd_env("8501", 1, target="9101")
+    said = _plain_of(profile_mod.info(plain_ctx, env_info))
+    check("普通成员看不到别人的信息卡", "需要「助手」权限" in said,
+          said.replace("\n", " | "))
+
+    env_bag = _cmd_env("8501", 1, target="9101")
+    said = _plain_of(bag_domain.bag_cmd(plain_ctx, env_bag))
+    check("普通成员看不到别人的背包", "需要「助手」权限" in said,
+          said.replace("\n", " | "))
+
+    env_quota = _cmd_env("8501", 1, target="9101")
+    said = _plain_of(quota_domain.wallet(plain_ctx, env_quota))
+    check("普通成员看不到别人的额度", "需要「助手」权限" in said,
+          said.replace("\n", " | "))
+
     # ---- 帮助菜单按等级过滤 ----
     base_low = help_mod.make_block(plugin.ctx, "base", 1)
     base_high = help_mod.make_block(plugin.ctx, "base", 4)
@@ -3107,10 +3470,130 @@ def main() -> None:
     admin_low = help_mod.make_block(plugin.ctx, "admin", 1)
     admin_mid = help_mod.make_block(plugin.ctx, "admin", 2)
     admin_high = help_mod.make_block(plugin.ctx, "admin", 4)
+    admin_3 = help_mod.make_block(plugin.ctx, "admin", 3)
     check("1 级看不到任何管理口令", admin_low is None, str(admin_low))
-    check("2 级只看到禁言解禁", admin_mid and "禁言" in admin_mid.text and "踢" not in admin_mid.text, admin_mid.text if admin_mid else "")
+    # 禁言从 2 级提到 3 级：助手只做查看类操作，管人归管理。
+    check("2 级看不到管理口令（禁言已提到 3 级）", admin_mid is None, str(admin_mid))
+    check("3 级能看到禁言", admin_3 and "禁言" in admin_3.text,
+          admin_3.text if admin_3 else "")
+    check("3 级看不到授权和发额度",
+          admin_3 and "授权" not in admin_3.text and "发额度" not in admin_3.text,
+          admin_3.text if admin_3 else "")
     check("4 级看到群主那组", admin_high and "群主" in admin_high.text)
     check("高于自己等级的组整块不出现", "〔4 级" not in (admin_mid.text if admin_mid else ""))
+
+    # ---- 新功能必须出现在群里能看到的口令清单里 ----
+    # 加了命令却漏了 HelpEntry，等于功能藏起来了 —— 群友永远不会知道有这个东西。
+    fun_page = help_mod.make_block(plugin.ctx, "fun", 1)
+    check("娱乐页有假装消息", fun_page and "假装消息" in fun_page.text,
+          fun_page.text if fun_page else "")
+    check("娱乐页有发红包", fun_page and "发红包" in fun_page.text)
+    check("娱乐页有抢红包", fun_page and "抢红包" in fun_page.text)
+    base_page = help_mod.make_block(plugin.ctx, "base", 1)
+    check("基础页有禁言卡", base_page and "禁言卡" in base_page.text,
+          base_page.text if base_page else "")
+    check("基础页有改名卡提示", base_page and "改名" in base_page.text)
+
+    # ---- 大富翁：冷却 / 六种结果 / 期望为负 ----
+    mono = importlib.import_module("gk_plugin.domains.monopoly")
+    check("骰子只掷 1~6", all(1 <= mono._roll() <= 6 for _ in range(300)))
+    # 期望一旦为正，最勤快的人会一直掷，额度越滚越不值钱。
+    exp = mono._expected(5, 300, 0.01)
+    check("每局期望为负", exp < 0, f"{exp:+.2f}")
+    check("六种结果各不相同", len({kind for kind, _, _ in mono.DICE}) == 5,
+          str([kind for kind, _, _ in mono.DICE]))
+
+    def _mono_env(uid: str = "8601"):
+        return _cmd_env(uid, 1)
+
+    ndb.ensure_member("1001", "8601")
+    ndb.add_quota("1001", "8601", 100, "测试", "8601")
+    original_roll = mono._roll
+    original_random = mono.random.random
+
+    # 5 点：+10 额度
+    mono._roll = lambda: 5
+    said = _plain_of(mono.play(plain_ctx, _mono_env()))
+    check("5 点加了 10 额度", ndb.balance("1001", "8601") == 100 - 5 + 10,
+          f"余额 {ndb.balance('1001', '8601')}")
+    check("结果里写了点数", "5 点" in said, said.replace("\n", " | "))
+
+    # 冷却：同一人立刻再掷会被拒，而且不扣钱
+    before = ndb.balance("1001", "8601")
+    said = _plain_of(mono.play(plain_ctx, _mono_env()))
+    check("冷却期内掷不了", "后再来" in said, said.replace("\n", " | "))
+    check("冷却期不扣钱", ndb.balance("1001", "8601") == before)
+
+    # 2 点：禁言
+    ndb.monopoly_mark("1001", "8601", 0)
+    mono._roll = lambda: 2
+    said = _plain_of(mono.play(plain_ctx, _mono_env()))
+    check("2 点触发禁言", "禁言" in said, said.replace("\n", " | "))
+
+    # 3 点：名字挂后缀
+    ndb.monopoly_mark("1001", "8601", 0)
+    mono._roll = lambda: 3
+    said = _plain_of(mono.play(plain_ctx, _mono_env()))
+    member = ndb.get_member("1001", "8601")
+    check("3 点挂上了后缀", member["nick_suffix"] == mono.SUFFIX_WORD,
+          str(member["nick_suffix"]))
+    check("后缀有到期时间", int(member["nick_suffix_until"] or 0) > 0)
+
+    # 4 点：随机一张权限卡
+    ndb.monopoly_mark("1001", "8601", 0)
+    mono._roll = lambda: 4
+    said = _plain_of(mono.play(plain_ctx, _mono_env()))
+    cards = (ndb.bag_count("1001", "8601", "permit", "mute")
+             + ndb.bag_count("1001", "8601", "permit", "rename"))
+    check("4 点发了一张权限卡", cards == 1, str(cards))
+
+    # 6 点：+20；把概率设 0 来确认「不中大奖」时也只给 20
+    ndb.monopoly_mark("1001", "8601", 0)
+    mono._roll = lambda: 6
+    no_jackpot = nick_ctx(monopoly_jackpot_chance=0)
+    before = ndb.balance("1001", "8601")
+    said = _plain_of(mono.play(no_jackpot, _mono_env()))
+    check("6 点保底 +20", ndb.balance("1001", "8601") == before - 5 + 20,
+          f"{ndb.balance('1001', '8601')} vs {before - 5 + 20}")
+    check("概率 0 时不中大奖", "终极大奖" not in said, said.replace("\n", " | "))
+
+    # 概率 100% 时必须触发（否则那个分支永远测不到）
+    ndb.monopoly_mark("1001", "8601", 0)
+    mono.random.random = lambda: 0.0
+    sure = nick_ctx(monopoly_jackpot_chance=100)
+    said = _plain_of(mono.play(sure, _mono_env()))
+    check("概率满时必中终极大奖", "终极大奖" in said, said.replace("\n", " | "))
+
+    mono._roll = original_roll
+    mono.random.random = original_random
+
+    # 余额不够入场费
+    ndb.ensure_member("1001", "8602")
+    start = ndb.balance("1001", "8602")
+    if start > 0:
+        ndb.add_quota("1001", "8602", -start, "清空", "8602")
+    said = _plain_of(mono.play(plain_ctx, _mono_env("8602")))
+    check("余额不够入场费就玩不了", "入场" in said, said.replace("\n", " | "))
+
+    # ---- 名字后缀：拼得上、剥得掉、到点自己消失 ----
+    cfg_s = config_mod.PluginConfig({})
+    check("后缀用「｜」接在名字后面",
+          nick_mod.compose("陈嘉豪", "男", cfg_s, "我是猪") == "🦊 陈嘉豪｜我是猪",
+          nick_mod.compose("陈嘉豪", "男", cfg_s, "我是猪"))
+    check("没有后缀时名片不变",
+          nick_mod.compose("陈嘉豪", "男", cfg_s) == "🦊 陈嘉豪")
+    # 剥名字时必须把后缀一起剥掉，否则「名字｜我是猪」会被当成不合规的名字。
+    check("剥名字时剥掉后缀",
+          nick_mod.strip("🦊 陈嘉豪｜我是猪", cfg_s) == "陈嘉豪",
+          nick_mod.strip("🦊 陈嘉豪｜我是猪", cfg_s))
+
+    ndb.ensure_member("1001", "8601")
+    ndb.set_nick_suffix("1001", "8601", "我是猪", 1000)
+    check("没到期时读得到", ndb.nick_suffix("1001", "8601", now=999)[0] == "我是猪")
+    check("过期后读不到", ndb.nick_suffix("1001", "8601", now=1001)[0] == "")
+    check("过期后被就地清掉",
+          ndb.get_member("1001", "8601")["nick_suffix"] == "",
+          str(ndb.get_member("1001", "8601")["nick_suffix"]))
 
     # ---- 发言榜：开 / 关 ----
     on_ctx = types.SimpleNamespace(config=config_mod.PluginConfig({"rank_message_enabled": True}))
@@ -3138,8 +3621,29 @@ def main() -> None:
         "base",
         4,
     )
-    check("发言榜关掉时菜单里也没有", off_menu and "发言排行" not in off_menu.text)
-    check("打开后菜单里出现", on_menu and "发言排行" in on_menu.text)
+    check("发言榜关掉时菜单里也没有", off_menu and "发言榜" not in off_menu.text)
+    check("打开后菜单里出现", on_menu and "发言榜" in on_menu.text)
+
+    # ---- 日榜分页：页码解析 / 上限夹取 ----
+    # 「发言榜2」看第 11~20 名。解析必须是纯函数，否则每次验证都要起一遍
+    # 数据库和事件，很难测到边界。
+    check("发言榜2 解析出第 2 页",
+          rank_mod._page_from("发言榜2", rank_mod.MESSAGE_WORDS) == "2",
+          str(rank_mod._page_from("发言榜2", rank_mod.MESSAGE_WORDS)))
+    check("日榜 不写页码就是第 1 页",
+          rank_mod._page_from("日榜", rank_mod.MESSAGE_WORDS) == "1")
+    check("日榜 第3页 也认",
+          rank_mod._page_from("日榜 第3页", rank_mod.MESSAGE_WORDS) == "3",
+          str(rank_mod._page_from("日榜 第3页", rank_mod.MESSAGE_WORDS)))
+    check("不相关的词不接",
+          rank_mod._page_from("你好", rank_mod.MESSAGE_WORDS) is None)
+    rank_cfg = config_mod.PluginConfig({})
+    check("页码超过上限被夹到最后一页", rank_mod._page("99", rank_cfg) == (5, True),
+          str(rank_mod._page("99", rank_cfg)))
+    check("正常页码不夹", rank_mod._page("3", rank_cfg) == (3, False))
+    check("翻页时名次接着数", rank_mod._table(
+        [{"display_name": "甲"}], ["10 条"], [""], start=11
+    )[0].startswith("11."), rank_mod._table([{"display_name": "甲"}], ["10 条"], [""], start=11)[0])
 
     # 额度榜必须 2 级：余额是家底，全群可查等于把「谁穷」挂在墙上。
     ranks = {c.key: c.level for c in registry_mod.COMMANDS}

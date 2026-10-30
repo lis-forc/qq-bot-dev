@@ -47,7 +47,7 @@ from ..core.context import PluginContext
 from ..core.meme_api import MemeApiError, MemeInfo
 from ..core.services import ProfileService
 from ..utils import event as ev
-from ..utils import deco, media, onebot
+from ..utils import deco, media, nickname, onebot
 from ..utils.forward import build_forward
 from ..utils.router import compact
 
@@ -137,24 +137,48 @@ def mention_words(event: Any) -> list[str]:
     return words
 
 
-def strip_mentions(raw: str, event: Any = None) -> str:
+def strip_mentions(raw: str, event: Any = None, marks: tuple[str, ...] = ()) -> str:
     """把 `@某人` 从参数里摘干净，保留真正的文字。
 
-    两遍：
-    1. 已知显示名（可能带空格）整段剔除；
-    2. 剩下零散的 `@xxxx`（不带空格的）逐个剔除。
+    三遍，顺序不能换：
 
-    第二遍之后如果还把「文字」误删了怎么办：跑第一遍时已经把
-    「@昵称」整段删掉了，第二遍只处理以 @ 开头的词，
-    正常文字不会以 @ 开头，所以不会误伤。
+    1. **已知显示名整段剔除**（可能带空格）；
+    2. **`@记号 名字` 整段剔除** —— 群名片是「🦊 陈嘉豪」，客户端的 @ 渲染
+       出来就是 `@🦊 陈嘉豪`。记号与名字之间那个空格让「@ 到哪结束」变得
+       没法判断，所以先按「@ + 记号 + 空格 + 一段非空白」整段吃掉；
+    3. 剩下零散的 `@xxxx`（不带空格的）逐个剔除。
+
+    第二遍是修 bug 加的：只有 1、3 两遍时，第 3 遍的 `@\\S+` 只吃掉了
+    `@🦊`，把「陈嘉豪」留在参数里 —— 模板不要文字的命令（比如「摸」）
+    于是报「需要 0 段文字，现在给了 1 段」。凡是带性别记号的人都踩。
     """
     text = raw or ""
     for word in mention_words(event):
         if word:
             text = text.replace(word, " ")
+    for mark in marks:
+        if mark:
+            text = re.sub(rf"@{re.escape(mark)}\s*\S+", " ", text)
     # 不带空格的 @xxx：从 @ 一直吃到空白
     text = re.sub(r"@\S+", " ", text)
     return compact(text)
+
+
+def chain_text(event: Any) -> str:
+    """消息链里的**纯文本**段，跳过 @ / 图片 / 引用。
+
+    这是修 @ 解析问题的正解：AstrBot 的 `message_str` 把 @ 渲染成
+    `@群名片`，而群名片是「🦊 陈嘉豪」—— 那个空格让它和正常文字无法区分。
+    从消息链取文本，@ 段天然不在里面，一个字符都不用猜。
+
+    取不到（某些协议端不带 message 列表）返回空串，调用方退回 `message_str`。
+    """
+    parts: list[str] = []
+    for comp in getattr(getattr(event, "message_obj", None), "message", None) or []:
+        if type(comp).__name__ != "Plain":
+            continue
+        parts.append(str(getattr(comp, "text", "") or ""))
+    return "".join(parts)
 
 
 @dataclass
@@ -432,6 +456,27 @@ def _list_matcher(ctx, text: str, lower: str) -> Match | None:
     return None
 
 
+def _strip_make_prefix(text: str) -> str | None:
+    """切掉「表情 / 做表情 / 制作表情」前缀；不是这个命令返回 None。
+
+    matcher 和 handler 共用同一套规则：matcher 用它判断这条消息归不归自己，
+    handler 用它从**消息链的纯文本**里重新取一次参数。两处如果各写一遍，
+    迟早在「前缀后面跟的是冒号还是空格」这种细节上分叉。
+
+    返回空串表示「只发了前缀、没带参数」，和「不是这个命令」的 None 要分清 ——
+    前者要回用法提示。
+    """
+    cleaned = compact(text)
+    for word in MAKE_PREFIXES:
+        if cleaned == word:
+            return ""
+        if cleaned.startswith(word):
+            rest = cleaned[len(word):]
+            if rest and (rest[0].isspace() or rest[0] in "：:，,、"):
+                return rest.lstrip("：:，,、 ")
+    return None
+
+
 def _make_matcher(ctx, text: str, lower: str) -> Match | None:
     """「表情 xxx」。
 
@@ -439,15 +484,10 @@ def _make_matcher(ctx, text: str, lower: str) -> Match | None:
     而这里需要看到原文才能分辨「@ 提到的人」和「真的要写在图上的 @」。
     交给 `strip_mentions` 统一处理，比在匹配器里删一半再猜另一半可靠。
     """
-    cleaned = compact(text)
-    for word in MAKE_PREFIXES:
-        if cleaned == word:
-            return Match()
-        if cleaned.startswith(word):
-            rest = cleaned[len(word):]
-            if rest and (rest[0].isspace() or rest[0] in "：:，,、"):
-                return Match(args=rest.lstrip("：:，,、 "))
-    return None
+    args = _strip_make_prefix(text)
+    if args is None:
+        return None
+    return Match(args=args)
 
 
 async def _load_catalog(ctx: PluginContext) -> tuple[dict | None, str]:
@@ -471,7 +511,12 @@ def _sorted_templates(catalog: dict) -> list[MemeInfo]:
 # ---------------------------------------------------------------- 命令
 async def make(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
     """表情 <模板> [参数…]：做一张表情。"""
-    raw = strip_mentions(env.args or "", env.event)
+    # 优先从消息链取纯文本：@ 段天然被跳过，不会像 message_str 那样留下
+    # 「陈嘉豪」这种被空格截断的半截名字。协议端没给 message 列表时，
+    # 退回 matcher 已经切好的参数，靠 strip_mentions 里的记号规则兜住。
+    from_chain = _strip_make_prefix(chain_text(env.event))
+    source = from_chain if from_chain is not None else (env.args or "")
+    raw = strip_mentions(source, env.event, nickname.known_marks(ctx.config))
     if not raw:
         yield env.event.plain_result(_usage(ctx))
         return
@@ -677,7 +722,11 @@ async def meme_list(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
 
 async def meme_detail(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
     """表情详情 <模板>：这个模板到底要几个图几段字。"""
-    query = strip_mentions(env.args or "", env.event).strip()
+    # 这里沿用 matcher 切好的参数：它的前缀是「表情详情」，不是「表情」，
+    # 而 chain_text 给的是整句原文，直接喂进去会把口令本身当成模板名。
+    query = strip_mentions(
+        env.args or "", env.event, nickname.known_marks(ctx.config)
+    ).strip()
     if not query:
         yield env.event.plain_result("用法：表情详情 摸头")
         return

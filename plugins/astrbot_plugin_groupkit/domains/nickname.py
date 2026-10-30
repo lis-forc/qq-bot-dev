@@ -44,15 +44,12 @@ from ..utils import event as ev
 from ..utils.router import compact
 
 # ---------------------------------------------------------------- 文案
-DEFAULT_JOIN = (
-    "第一次来，先把名字定下来\n"
-    "发「改名 你的名字」，机器人会替你把群名片改好 —— {rule}。"
-)
+DEFAULT_JOIN = "名字定一下：发「改名 你的名字」· {rule}"
 
 DEFAULT_NAG = (
-    "{name}，名字还没登记\n"
-    "发「改名 你的名字」—— {rule}。\n"
-    "第 {n}/{limit} 次提醒，超了会被静音 {mute} 分钟。"
+    "{name}，名字还没定 😅 发「改名 你的名字」\n"
+    "{rule}\n"
+    "第 {n}/{limit} 次提醒，超了静音 {mute} 分钟"
 )
 
 EXAMPLE = "阿橘"
@@ -178,7 +175,9 @@ async def apply_name(
             updated = await asyncio.to_thread(ctx.db.set_sex, group_id, user_id, derived)
 
     # 群名片：库里只存名字，记号是这里现拼的。
-    card = nickname.compose(name, sex, cfg) if cfg.nick_enabled else name
+    # 后缀一并拼上——它是惩罚，不能让「改个名」就洗掉。
+    suffix, _until = await asyncio.to_thread(ctx.db.nick_suffix, group_id, user_id)
+    card = nickname.compose(name, sex, cfg, suffix) if cfg.nick_enabled else name
     card_ok = await onebot.set_group_card(event, group_id, user_id, card)
 
     try:
@@ -221,12 +220,17 @@ async def guard(
     三种结局：
     - 名字合规 → 顺手把名片掰回该有的样子（不一致才动手）；
     - 名字不合规且没登记过 → 催改名，够次数就静音；
-    - 自由人 / 昵称系统关掉 / 机器人没权限 → 什么都不做。
+    - 自由人 / 群主 / 昵称系统关掉 / 机器人没权限 → 什么都不做。
     """
     cfg = ctx.config
     if not cfg.nick_enabled or not member:
         return None
     if int(member.get("freeman") or 0):
+        return None
+    # 群主不碰：QQ 里管理员改不了群主的群名片，与其每条消息都发一次
+    # 注定失败的请求、在日志里刷一行警告，不如开头就绕开。角色是消息
+    # 报文里白捡的字段（见 ``ev.sender_role``），这里零网络请求。
+    if ev.sender_role(event) == "owner":
         return None
 
     card = ev.sender_card(event)
@@ -244,12 +248,17 @@ async def guard(
             await asyncio.to_thread(ctx.db.set_sex, group_id, user_id, derived)
 
     if not str(member.get("display_name") or ""):
-        if cfg.nick_force and not nickname.is_valid(name, cfg):
+        # 不合规就催，没有开关 —— 「不合规的名字必须改」是昵称系统的
+        # 存在前提，不是它的一个可调选项；能调的只有催几次、静音多久。
+        if not nickname.is_valid(name, cfg):
             return await _nag(ctx, event, group_id, user_id, name)
         # 合规就采纳：他自己已经把名字弄对了，不必再走一遍「改名」。
         await asyncio.to_thread(ctx.db.set_display_name, group_id, user_id, name)
 
-    expected = nickname.compose(name, sex, cfg)
+    # 名片 = 记号 + 名字 + 临时后缀。后缀（大富翁的「我是猪」这类）
+    # 到期后这里自然拼不出来，下一次发言就会把名片掰回没有后缀的样子。
+    suffix, _until = await asyncio.to_thread(ctx.db.nick_suffix, group_id, user_id)
+    expected = nickname.compose(name, sex, cfg, suffix)
     if not card or card == expected:
         return None
     if not await can_manage(event, group_id):
@@ -261,14 +270,16 @@ async def guard(
         )
         return None
 
-    logger.info(f"[群助手] 群名片已改回：{user_id} @ 群 {group_id} → {expected}")
+    logger.info(f"[群助手] 群名片已更新：{user_id} @ 群 {group_id} → {expected}")
     key = (str(group_id), str(user_id))
     today = _today()
     if _NOTICED.get(key) != today:
         # 一天最多说一次。不说的话他会以为自己的名片被谁改了；
         # 每改一次都说，就成了自己跟自己刷屏。
         _NOTICED[key] = today
-        return f"（群名片帮你改回来了：{expected}）"
+        # 文案不预设「他之前改过名」：自动采纳的新人和被人手改掉名片的
+        # 老人走的是同一条路，说「帮你改回来了」对前者是凭空一句。
+        return f"（群名片已自动更新：{expected}）"
     return None
 
 

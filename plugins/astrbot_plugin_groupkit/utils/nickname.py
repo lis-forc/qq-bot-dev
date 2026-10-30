@@ -108,8 +108,12 @@ def mark_for(sex: str, cfg) -> str:
     return str(getattr(cfg, "nick_emoji_none", "") or "")
 
 
-def _known_marks(cfg) -> tuple[str, ...]:
-    """所有要参与剥离的记号：内置三个 + 配置里的三个。去重、去掉空值。"""
+def known_marks(cfg) -> tuple[str, ...]:
+    """所有要参与剥离的记号：内置三个 + 配置里的三个。去重、去掉空值。
+
+    对外公开是因为还有一个消费者：表情命令要从文本里吃掉 `@🦊 陈嘉豪`
+    这种被渲染出来的 @ —— 它必须先知道哪些字符是记号。
+    """
     extra = (
         str(getattr(cfg, "nick_emoji_male", "") or ""),
         str(getattr(cfg, "nick_emoji_female", "") or ""),
@@ -127,13 +131,22 @@ def _separator(cfg) -> str:
     return str(getattr(cfg, "nick_separator", " ") or "")
 
 
-def compose(name: str, sex: str, cfg) -> str:
-    """拼出「机器人认为的群名片」。记号为空时就是名字本身。"""
+def compose(name: str, sex: str, cfg, suffix: str = "") -> str:
+    """拼出「机器人认为的群名片」。记号为空时就是名字本身。
+
+    ``suffix`` 是临时后缀（大富翁那类惩罚，比如「我是猪」），用同一个
+    分隔符接在名字后面 —— 看起来像名字的一部分，而不是另加的备注。
+    """
     name = str(name or "").strip()
     mark = mark_for(sex, cfg)
-    if not mark:
-        return name
-    return f"{mark}{_separator(cfg)}{name}"
+    sep = _separator(cfg)
+    text = f"{mark}{sep}{name}" if mark else name
+    suffix = str(suffix or "").strip()
+    if suffix:
+        # 用「｜」而不是分隔符：后缀是挂牌，得一眼看出「这不是他名字」。
+        # 分隔符是可配的（可能是空格），挂牌用空格会被读成名字的一部分。
+        text = f"{text}｜{suffix}"
+    return text
 
 
 def strip(card: str, cfg) -> str:
@@ -143,7 +156,7 @@ def strip(card: str, cfg) -> str:
     是自己在 QQ 里起的，不该因为「我们的规则里有记号」就被改坏。
     """
     text = str(card or "").strip()
-    for mark in _known_marks(cfg):
+    for mark in known_marks(cfg):
         if text.startswith(mark):
             text = text[len(mark):]
             break
@@ -151,6 +164,11 @@ def strip(card: str, cfg) -> str:
     if sep and text.startswith(sep):
         text = text[len(sep):]
     # `strip()` 兜住「记号后面跟着一串空格」这种手改出来的形态。
+    text = text.strip()
+    # 摘掉大富翁那类临时后缀。名字里不可能出现「｜」—— validate 禁止
+    # 一切非 alnum 字符 —— 所以见到它就说明后面是后缀，不是名字的一部分。
+    if "｜" in text:
+        text = text.split("｜", 1)[0]
     return text.strip()
 
 

@@ -101,6 +101,35 @@ def prefix(words: Sequence[str]) -> Callable[[Any, str, str], Match | None]:
     return matcher
 
 
+def exact_or_mention(words: Sequence[str]) -> Callable[[Any, str, str], Match | None]:
+    """整句相等，**或者**「口令 + 一个 @ / QQ 号」。
+
+    为什么不能直接用 ``exact``：`额度` 用 exact 时，`额度 @某人` 匹配不上 ——
+    群友看到的是「没反应」，还以为机器人挂了。这个坑踩过一次：三个
+    「看别人」的命令全都没反应，因为它们都在用 exact。
+
+    为什么不能改用 ``prefix``：`额度怎么涨`、`背包满了怎么办` 会被当成命令
+    吃掉，群友的提问再也得不到回答。
+
+    折中是只放行两种后缀：以 ``@`` 开头（看别人），或者是纯数字（QQ 号）。
+    """
+    pool = tuple(word.lower() for word in words)
+
+    def matcher(ctx, text: str, lower: str) -> Match | None:
+        cleaned = lower.strip()
+        if cleaned in pool:
+            return Match()
+        for word in pool:
+            if not cleaned.startswith(word):
+                continue
+            rest = cleaned[len(word):].strip()
+            if rest.startswith("@") or rest.isdigit():
+                return Match()
+        return None
+
+    return matcher
+
+
 def regex(pattern: str, group: int = 1) -> Callable[[Any, str, str], Match | None]:
     """正则全匹配。用于 `i 123456` 这种「口令 + 纯数字」的形式。"""
     compiled = re.compile(pattern)

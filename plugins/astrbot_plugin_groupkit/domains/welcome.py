@@ -51,9 +51,8 @@ from . import nickname as nick_flow
 VERIFY_DEFAULT_QUESTION = "先发一句话吧，确认你是真人 —— 随便说点什么就行"
 
 _WELCOME_DEFAULT = (
-    "{at} 欢迎进来坐坐\n"
-    "新人礼 {quota} {currency} 已经挂账上了，发条消息就能领到。\n"
-    "不知道这里有什么，发「帮助」看一眼。"
+    "{at} 进来坐 🎉 新人礼 {quota} {currency}，说句话就到账\n"
+    "发「帮助」看能玩什么"
 )
 
 
@@ -149,7 +148,7 @@ async def on_join(
     像三个自动回复在抢话。
     """
     cfg = ctx.config
-    if not cfg.welcome_enabled and not cfg.verify_enabled and not cfg.nick_force:
+    if not cfg.welcome_enabled and not cfg.verify_enabled and not cfg.nick_enabled:
         return
 
     name = await _nickname(event, group_id, user_id, cfg)
@@ -162,7 +161,7 @@ async def on_join(
             parts.append(text)
     # 改名提示独立于欢迎语开关：群主可能想关掉欢迎语，但「进来先改名」
     # 是这个群的规矩，不该跟着一起消失。
-    if cfg.nick_enabled and cfg.nick_force:
+    if cfg.nick_enabled:
         hint = nick_flow.render_join_hint(cfg, name)
         if hint:
             parts.append(hint)

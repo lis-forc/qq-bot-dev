@@ -25,6 +25,7 @@ AstrBot 从 4.16 起提供 ``Context.register_web_api()``：插件可以在 WebU
 from __future__ import annotations
 
 import asyncio
+import types
 from typing import Any, Callable
 
 try:  # 本地单测时没有 astrbot，退化成标准库 logging（和 database.py 同一套做法）
@@ -38,6 +39,7 @@ from . import settings
 from .checkin import CheckinService
 from .config import PluginConfig
 from .database import Database
+from .services import Permission
 
 try:  # 本地自测没有装 quart，导不进来也要能让模块被 import
     from quart import jsonify, request
@@ -61,6 +63,7 @@ ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
     ("storage", "storage", ["GET"], "数据库体积与各表行数"),
     ("assets", "assets", ["GET"], "图片素材：三个目录与名片皮肤清单"),
     ("config", "config", ["GET"], "配置分组、字段与当前值"),
+    ("commands", "commands", ["GET"], "全部口令与所需等级（按级分组）"),
     ("config-save", "config_save", ["POST"], "保存配置并落盘"),
     ("member-update", "member_update", ["POST"], "调整成员额度"),
 )
@@ -82,6 +85,75 @@ def _int_arg(name: str, default: int, low: int, high: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(low, min(high, value))
+
+
+def command_catalog(cfg: Any) -> dict[str, Any]:
+    """全部口令，按所需等级分组。
+
+    数据源是 ``domains/registry.py`` 的 ``COMMANDS`` —— 群里发「帮助」
+    和「管理」读的是同一份。所以**这个页面永远不会出现「群里有、面板
+    没有」**：加一个新功能只改注册表，这里自动跟上。
+
+    以前面板上只有几个开关，管理员想知道「我能发什么口令」得去翻代码，
+    这正是之前最要命的一处信息缺口。
+
+    抽成模块级函数而不是写在 handler 里，是为了自测能直接断言内容 ——
+    「口令表里有给额度、有发额度」这种话，只能真的读一遍数据才验得了。
+    """
+    from ..domains.registry import COMMANDS
+
+    # 命令的 enabled 钩子只读 ctx.config，给个最小替身就够用，
+    # 不需要构造完整的 PluginContext。
+    probe = types.SimpleNamespace(config=cfg)
+
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for cmd in COMMANDS:
+        active = True
+        hook = getattr(cmd, "enabled", None)
+        if callable(hook):
+            try:
+                active = bool(hook(probe))
+            except Exception:
+                active = True
+        for entry in getattr(cmd, "help", ()) or ():
+            usage = str(getattr(entry, "usage", "") or "").strip()
+            if not usage:
+                continue
+            level = int(getattr(entry, "level", 1) or 1)
+            # 同一条用法可能在两页各挂一次，按 (等级, 用法) 去重
+            if (level, usage) in seen:
+                continue
+            seen.add((level, usage))
+            rows.append(
+                {
+                    "usage": usage,
+                    "desc": str(getattr(entry, "desc", "") or ""),
+                    "level": level,
+                    "page": str(getattr(entry, "page", "base") or "base"),
+                    "group": str(getattr(entry, "group", "") or ""),
+                    "key": cmd.key,
+                    "active": active,
+                }
+            )
+
+    # 按等级分组：看这张表的人第一个问题永远是「我能不能用」。
+    buckets: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        buckets.setdefault(row["level"], []).append(row)
+    for items in buckets.values():
+        items.sort(key=lambda item: (item["group"], item["usage"]))
+
+    groups = [
+        {
+            "level": level,
+            "title": Permission.level_name(level),
+            "items": buckets[level],
+            "count": len(buckets[level]),
+        }
+        for level in sorted(buckets)
+    ]
+    return {"groups": groups, "total": len(rows)}
 
 
 class WebApi:
@@ -299,6 +371,11 @@ class WebApi:
 
     async def storage(self):
         data = await asyncio.to_thread(self.db.web_storage)
+        return self._ok(**data)
+
+    async def commands(self):
+        """全部口令，按所需等级分组。汇总逻辑在 ``command_catalog``。"""
+        data = await asyncio.to_thread(command_catalog, self.cfg)
         return self._ok(**data)
 
     async def assets(self):

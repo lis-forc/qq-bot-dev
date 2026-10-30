@@ -16,6 +16,7 @@ from astrbot.api import logger
 
 from ..core.context import PluginContext
 from ..utils import event as ev
+from ..utils import onebot
 from . import welcome
 
 
@@ -32,6 +33,17 @@ async def handle_notice(ctx: PluginContext, event, group_id: str) -> None:
         join_ts = int(ev.raw_get(raw, "time") or 0) or int(time.time())
     except (TypeError, ValueError):
         join_ts = int(time.time())
+
+    # 黑名单成员一进群就踢，而且**不建成员记录、不发新人礼**。
+    # 顺序很重要：先挂账再踢的话，他每次重进都能白拿一次新人额度。
+    # 也不发欢迎语 —— 对着一张「欢迎进来坐」的图把人踢出去更难看。
+    if await asyncio.to_thread(ctx.db.is_blacklisted, group_id, str(user_id)):
+        kicked = await onebot.kick(event, group_id, str(user_id))
+        logger.info(
+            f"[群助手] 黑名单成员进群，已自动踢出：{user_id} @ 群 {group_id}"
+            f"（成功={kicked}，失败一般是机器人没有群管权限）"
+        )
+        return
 
     await asyncio.to_thread(
         ctx.db.ensure_member, group_id, str(user_id), ctx.config.welcome_quota

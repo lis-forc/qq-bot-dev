@@ -68,6 +68,25 @@ SECTIONS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "play",
+        f"{deco.mark('fun')} 玩法与排行",
+        "假装消息、红包、大富翁、权限卡，以及两张排行榜翻几页、谁能看。"
+        "花出去的都是自己的额度，不上商店。",
+        (
+            "fake_cost",
+            "red_packet_count",
+            "monopoly_cost",
+            "monopoly_cooldown_hours",
+            "monopoly_jackpot",
+            "monopoly_jackpot_chance",
+            "mute_card_price",
+            "rename_card_price",
+            "rank_message_enabled",
+            "rank_member_enabled",
+            "rank_max_page",
+        ),
+    ),
+    (
         "nick",
         f"{deco.mark('nick')} 昵称与记号",
         "群名片由机器人管：最前面挂性别记号，名字被人手改掉会自动改回来。"
@@ -81,7 +100,6 @@ SECTIONS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
             "nick_min_len",
             "nick_max_len",
             "nick_allow_digits",
-            "nick_force",
             "nick_join_text",
             "nick_nag_text",
             "nick_nag_limit",
@@ -133,12 +151,12 @@ SECTIONS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     (
         "panel",
         f"{deco.mark('admin')} 面板与群管",
-        "权限等级：4 = 只认群主，3 = 群主和管理员，2 及以下不建议开放。",
+        "四级分工：成员只能用自己那份；助手只做查看；管理管人（禁言/踢/拉黑/扣额度）；"
+        "群主多两样——发额度和授权。完整口令表在控制台「口令」页。",
         (
             "owner_default_level",
             "admin_default_level",
             "default_mute_minutes",
-            "rank_message_enabled",
             "info_triggers",
             "help_style",
         ),

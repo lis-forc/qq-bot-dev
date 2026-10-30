@@ -41,3 +41,23 @@ def build_forward(event: Any, items: list[tuple[str, list]]) -> list | None:
 
 def text_node(title: str, body: str) -> tuple[str, list]:
     return title, [Plain(body)]
+
+
+def build_forward_as(event: Any, uin: str, name: str, body: str) -> list | None:
+    """用**指定的 QQ 号**当发言人，打一条合并转发。
+
+    这是「假装消息」的底座：QQ 的合并转发节点本来就带 ``uin`` 和 ``name``，
+    客户端拿 ``uin`` 去拉那个人的头像，所以 uin 填谁就显示谁的头像。
+
+    只发一条正文而不是一串条目：这个玩法要的是「他好像说了这么一句」，
+    拆成多个气泡反而像在模拟群聊记录，越界了。
+
+    返回 None 表示构造失败，调用方必须退回普通消息（并标明是伪造的）。
+    """
+    if not body or not uin:
+        return None
+    try:
+        return [Node(uin=str(uin), name=str(name or uin), content=[Plain(body)])]
+    except Exception as exc:
+        logger.error(f"[群助手] 构造伪合并转发失败，改用普通消息: {exc}")
+        return None

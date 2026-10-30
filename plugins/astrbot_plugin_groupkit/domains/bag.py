@@ -31,7 +31,15 @@ except Exception:  # pragma: no cover
     logger = logging.getLogger("astrbot_plugin_groupkit")
 
 from ..core.checkin import RELATIONS
-from ..core.command import Command, CommandEnv, HelpEntry, exact, prefix
+from ..core.command import (
+    Command,
+    CommandEnv,
+    HelpEntry,
+    exact,
+    exact_or_mention,
+    prefix,
+    require_level,
+)
 from ..core.context import PluginContext
 from ..utils import deco, event as ev, onebot
 
@@ -39,6 +47,11 @@ RULE = "=" * 26
 
 # 背包里头衔的固定 item_id —— 它不绑定任何具体内容，只是「一次修改机会」。
 TITLE_ITEM = "title"
+
+# 禁言卡的 item_id 与它禁多久。10 秒是刻意的：这张卡卖的是「玩一下」，
+# 不是「管人」。真有管理等级的人用「禁言」口令，那条路看的是权限不是钱。
+MUTE_CARD = "mute"
+MUTE_SECONDS = 10
 
 # 自定义头衔的长度上限。QQ 专属头衔本身有上限（各协议端 12~18 不等），
 # 取最保守的 12：超了协议端会拒，与其让它静默失败不如这里就拦下。
@@ -116,15 +129,106 @@ def bag_text(ctx: PluginContext, group_id: str, user_id: str) -> str:
     if buckets.get("relation"):
         lines.append(f"{deco.mark('relations')} 关系：" + "、".join(buckets["relation"]))
     if draws > 0:
-        lines.append(f"{deco.mark('quota')} 抽奖次数：{draws} 次（发「抽奖」使用）")
+        # 不写「（发「抽奖」使用）」：能打开背包的人都见过「抽奖」这个口令，
+        # 而每多一句解释，背包就多一行要读的东西。
+        lines.append(f"{deco.mark('quota')} 抽奖次数 ×{draws}")
     lines.extend([RULE, "头衔 想要的字 · 关系 名字 @某人"])
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- 口令
-async def bag_cmd(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
+async def use_mute_card(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
+    """禁言卡 @某人：拿一张卡换他闭嘴 10 秒。
+
+    三条硬规矩：
+
+    1. **只能对 3 级以下的人用。** 钱买到的是「玩一下」，不是管理权；
+       让普通人能禁言管理员，这功能第二天就会被用来打群架。
+    2. **机器人必须是管理员**，否则 `set_group_ban` 会失败 —— 失败要把卡
+       退回去，不能扣了卡什么也没发生。
+    3. **先扣卡再禁言**，失败了退回来。反过来的话（先禁言再扣卡），
+       重复点击会禁两次只扣一张。
+    """
+    targets = ev.at_targets(env.event, env.sender_id)
+    if not targets:
+        yield env.event.plain_result("格式：禁言卡 @某人\n一张卡让他安静 10 秒")
+        return
+    target = targets[0]
+    if target in {env.sender_id, ev.self_id(env.event)}:
+        yield env.event.plain_result("⚠️ 这个目标不能用")
+        return
+
+    # 目标等级：管理及以上不吃这张卡。等级要连手动授权一起算。
+    target_member = await asyncio.to_thread(ctx.db.get_member, env.group_id, target)
+    target_level = await ctx.permission.level(
+        env.event, env.group_id, target, target_member
+    )
+    if target_level >= 3:
+        yield env.event.plain_result("⚠️ 管理及以上不吃这张卡\n要管人请用「禁言」口令")
+        return
+
+    stock = await asyncio.to_thread(
+        ctx.db.bag_count, env.group_id, env.sender_id, "permit", MUTE_CARD
+    )
+    if stock <= 0:
+        yield env.event.plain_result(
+            "🔇 你还没有禁言卡\n"
+            f"发「购买 禁言卡」（{ctx.config.mute_card_price} {ctx.config.currency_name}）"
+        )
+        return
+
+    if not await onebot.is_bot_admin(env.event, env.group_id):
+        yield env.event.plain_result("⚠️ 机器人没有群管理权限，禁不了")
+        return
+
+    taken = await asyncio.to_thread(
+        ctx.db.bag_take, env.group_id, env.sender_id, "permit", MUTE_CARD
+    )
+    if not taken:
+        yield env.event.plain_result("🔇 卡不够了，刷新一下背包看看")
+        return
+
+    done = await onebot.mute(env.event, env.group_id, target, MUTE_SECONDS)
+    if not done:
+        # 卡已经扣了、人没禁住：退回去。宁可多一条日志，不能吞卡。
+        await asyncio.to_thread(
+            ctx.db.bag_add, env.group_id, env.sender_id, "permit", MUTE_CARD, 1
+        )
+        yield env.event.plain_result("⚠️ 禁言没成功，卡已经退回背包")
+        return
+
+    name = ctx.profiles.display_name(target_member, target)
+    left = await asyncio.to_thread(
+        ctx.db.bag_count, env.group_id, env.sender_id, "permit", MUTE_CARD
+    )
+    await asyncio.to_thread(
+        ctx.db.log_op, env.group_id, env.sender_id, "禁言卡", target, f"{MUTE_SECONDS}秒"
+    )
     yield env.event.plain_result(
-        await asyncio.to_thread(bag_text, ctx, env.group_id, env.sender_id)
+        f"🔇 {name} 安静 {MUTE_SECONDS} 秒（还剩 {left} 张卡）"
+    )
+
+
+# ---------------------------------------------------------------- 口令
+async def _who(ctx: PluginContext, env: CommandEnv) -> tuple[str, str]:
+    """看谁的背包。返回 (目标 QQ, 权限不足的提示)。
+
+    没 @ 就是看自己的，永远允许；@ 了别人要 2 级（助手）。普通成员只能
+    看自己那份 —— 「别人的包里有什么」属于别人的东西。
+    """
+    targets = ev.at_targets(env.event, env.sender_id)
+    if not targets:
+        return env.sender_id, ""
+    warn = await require_level(ctx, env, 2)
+    return targets[0], (warn or "")
+
+
+async def bag_cmd(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
+    target, warn = await _who(ctx, env)
+    if warn:
+        yield env.event.plain_result(warn)
+        return
+    yield env.event.plain_result(
+        await asyncio.to_thread(bag_text, ctx, env.group_id, target)
     )
 
 
@@ -396,11 +500,16 @@ async def shutdown(db: Any = None) -> None:
 COMMANDS = [
     Command(
         key="bag",
-        matcher=exact(("背包", "我的背包", "物品", "道具")),
+        # 同上：`背包 @某人` 得能被接住，而 exact 只认整句。
+        matcher=exact_or_mention(("背包", "我的背包", "物品", "道具")),
         handler=bag_cmd,
         perm_short="背包",
         help=(
-            HelpEntry("背包", "头衔 / 关系 / 抽奖次数都在这里", page="base", order=50, group="背包"),
+            HelpEntry("背包", "头衔 / 关系 / 抽奖次数 / 权限卡都在这里", page="base", order=50, group="背包"),
+            HelpEntry(
+                "背包 @某人", "看别人的背包（2 级起）",
+                page="base", level=2, order=50, group="我的信息",
+            ),
         ),
     ),
     Command(
@@ -420,6 +529,21 @@ COMMANDS = [
         help=(
             HelpEntry("关系 挚友 @某人", "结缔一段关系，对方同意才生效", page="base", order=52, group="背包"),
             HelpEntry("关系 解除", "解除现在的关系", page="base", order=53, group="背包"),
+        ),
+    ),
+    Command(
+        key="use_mute_card",
+        matcher=prefix(("禁言卡", "用禁言卡")),
+        handler=use_mute_card,
+        perm_short="禁言卡",
+        help=(
+            HelpEntry(
+                "禁言卡 @某人",
+                "消耗一张卡，让对方安静 10 秒（管理及以上不吃）",
+                page="base",
+                order=54,
+                group="背包",
+            ),
         ),
     ),
 ]

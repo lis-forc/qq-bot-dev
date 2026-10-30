@@ -36,6 +36,7 @@ from ..utils.text import pad, width
 # 每一块的标题与包含的商品类型。顺序即展示顺序。
 BLOCKS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("service", "服务", ("service",)),
+    ("level", "权限卡", ("permit",)),
     ("titles", "头衔", ("title",)),
     ("relations", "关系", ("relation",)),
     ("card", "名片皮肤", ("skin",)),
@@ -48,10 +49,14 @@ RULE = "=" * 26
 def _rows(
     ctx: PluginContext, items: list[ShopItem], group_id: str, user_id: str
 ) -> list[str]:
-    """一块商品的行。品名与价格对齐，说明跟在后面自然排。
+    """一块商品的行：品名 · 价格 · 状态（已拥有 / 正佩戴）。
 
-    只对齐前两列是有意的：说明长短差得远，硬对齐会在中间留出一大片空白，
-    反而更难读。最后一行不加空格（`rstrip`），免得手机端出现莫名的换行。
+    **不写介绍。** 介绍只有第一次看有用，之后每次进商店都要重读一遍，
+    而货架真正要回答的只有三件事：有什么、多少钱、我有没有。
+    所以 `item.desc` 不在这里出现 —— 想知道是什么，买了看背包。
+
+    只对齐前两列：状态列长短差得远，硬对齐会在中间留一大片空白。
+    最后一行 `rstrip`，免得手机端出现莫名换行。
     """
     if not items:
         return []
@@ -61,21 +66,20 @@ def _rows(
     lines: list[str] = []
     for item in items:
         price = f"{item.price} {ctx.config.currency_name}" if item.price > 0 else "免费"
-        tail = item.desc
         note = ctx.checkin.note_for(item, group_id, user_id)
-        if note:
-            tail = f"{tail}（{note}）"
         lines.append(
-            f"{pad(item.name, name_w)}  {pad(price, price_w)}  {tail}".rstrip()
+            f"{pad(item.name, name_w)}  {pad(price, price_w)}  {note}".rstrip()
         )
     return lines
 
 
 async def shop(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """货架。打包成合并转发，货架越长越该收进一条聊天记录里。
+    """货架。整张打包成**一个**合并转发节点。
 
-    每个分区一个节点：余额行打头，分区跟上，怎么买垫底。
-    构造转发失败（框架版本不兼容之类）退回普通消息 —— 宁可刷屏也不能不开张。
+    曾经每个分区一个节点，点开是一串气泡；实际读起来像被人一条条发过来，
+    而且货架越长气泡越多。现在只有一段文字：分区之间用 emoji 起头，
+    眼睛从记号往下扫就行。构造转发失败（框架版本不兼容）退回普通消息 ——
+    宁可刷屏也不能不开张。
     """
     items = await asyncio.to_thread(
         ctx.checkin.shop_items, env.group_id, env.sender_id
@@ -84,14 +88,10 @@ async def shop(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
     state = await asyncio.to_thread(ctx.checkin.state, env.group_id, env.sender_id)
     cur = ctx.config.currency_name
 
-    head = "\n".join(
-        [
-            f"余额 {balance} {cur} · 累计签到 {state['total_days']} 天",
-            "",
-            "发「购买 名字」下单 · 买到的头衔和关系都进「背包」",
-        ]
-    )
-    nodes: list[tuple[str, list]] = [(deco.head("商店", "shop"), [Plain(head)])]
+    lines = [
+        f"{deco.mark('quota')} 余额 {balance} {cur} · 累计签到 {state['total_days']} 天",
+        RULE,
+    ]
     for mark_key, title, kinds in BLOCKS:
         rows = _rows(
             ctx,
@@ -101,18 +101,20 @@ async def shop(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
         )
         if not rows:
             continue
-        nodes.append((deco.head(title, mark_key), [Plain("\n".join(rows))]))
+        lines.append("")
+        lines.append(deco.head(title, mark_key))
+        lines.extend(rows)
+    lines.append("")
+    lines.append(RULE)
+    lines.append("📌 发「购买 名字」下单 · 买到的头衔和关系都在「🎒 背包」")
 
-    chain = build_forward(env.event, nodes)
+    title = deco.head("商店", "shop")
+    body = "\n".join(lines)
+    chain = build_forward(env.event, [(title, [Plain(body)])])
     if chain:
         yield env.event.chain_result(chain)
         return
-    yield env.event.plain_result(
-        "\n".join(
-            [nodes[0][0], RULE, nodes[0][1][0].text]
-            + [part for title, [plain] in nodes[1:] for part in ("", title, plain.text)]
-        )
-    )
+    yield env.event.plain_result(f"{title}\n{body}")
 
 
 async def buy(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:

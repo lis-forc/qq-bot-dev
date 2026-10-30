@@ -12,7 +12,15 @@ from typing import AsyncGenerator
 
 from astrbot.api.message_components import Plain
 
-from ..core.command import Command, CommandEnv, HelpEntry, exact, prefix
+from ..core.command import (
+    Command,
+    CommandEnv,
+    HelpEntry,
+    exact,
+    exact_or_mention,
+    prefix,
+    require_level,
+)
 from ..core.context import PluginContext
 from ..utils import event as ev
 from ..utils.forward import build_forward
@@ -83,7 +91,21 @@ async def transfer(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
 
 
 async def wallet(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """余额 + 额度命名 + 抽奖进度。"""
+    """余额 + 额度命名 + 抽奖进度。@别人要 2 级（助手）。"""
+    targets = ev.at_targets(env.event, env.sender_id)
+    if targets:
+        warn = await require_level(ctx, env, 2)
+        if warn:
+            yield env.event.plain_result(warn)
+            return
+        who = targets[0]
+        member = await asyncio.to_thread(ctx.db.get_member, env.group_id, who)
+        name = ctx.profiles.display_name(member, who)
+        cur = ctx.config.currency_name
+        yield env.event.plain_result(
+            f"💰 {name} 的{cur}\n余额 {int((member or {}).get('quota') or 0)} {cur}"
+        )
+        return
     yield env.event.plain_result(
         await asyncio.to_thread(ctx.quota.render, env.group_id, env.sender_id, env.member)
     )
@@ -115,10 +137,18 @@ async def history(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
 COMMANDS = [
     Command(
         key="quota",
-        matcher=exact(("额度", "我的额度", "余额", "查额度")),
+        # exact_or_mention 而不是 exact：`额度 @某人` 要看别人的余额，
+        # 而 exact 只认整句 —— 那样发出去是「没反应」。
+        matcher=exact_or_mention(("额度", "我的额度", "余额", "查额度")),
         handler=wallet,
         perm_short="额度",
-        help=(HelpEntry("额度", "余额", page="base", order=40, slot="wallet", group="额度与统计"),),
+        help=(
+            HelpEntry("额度", "余额", page="base", order=40, slot="wallet", group="额度与统计"),
+            HelpEntry(
+                "额度 @某人", "看别人的余额（2 级起）",
+                page="base", level=2, order=42, group="我的信息",
+            ),
+        ),
     ),
     Command(
         key="draw",

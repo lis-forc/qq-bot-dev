@@ -268,6 +268,29 @@ class CheckinService:
                 kind="title",
             )
         )
+        # 权限卡：用额度买一次「临时权力」。
+        #
+        # 禁言卡只给 10 秒，是故意的 —— 它卖的是「玩一下」，不是「管人」。
+        # 真要管人有「禁言」口令，那看的是等级，不是钱。两条路分开，
+        # 钱就永远买不到真正的管理权。
+        items.extend(
+            [
+                ShopItem(
+                    item_id="mute",
+                    name="禁言卡",
+                    price=cfg.mute_card_price,
+                    desc="禁别人 10 秒，一次一张",
+                    kind="permit",
+                ),
+                ShopItem(
+                    item_id="rename",
+                    name="改名卡",
+                    price=cfg.rename_card_price,
+                    desc="改一次名字的资格，一次一张",
+                    kind="permit",
+                ),
+            ]
+        )
         items.extend(
             ShopItem(
                 item_id=name,
@@ -400,6 +423,21 @@ class CheckinService:
                 f"✅ 买到「{item.name}」结缔资格，已放进背包（×{n}）\n"
                 f"{item.desc}\n"
                 f"发「关系 {item.name} @对方」结缔 · 花费 {item.price} {cur} · 余额 {balance}"
+            )
+
+        if item.kind == "permit":
+            # 权限卡和头衔一样是消耗品：买进背包，用的时候扣一张。
+            # 不进背包直接生效的话，「我有几张禁言卡」就说不清了。
+            ok, reason, balance = self.db.bag_buy(
+                group_id, user_id, "permit", item.item_id, item.price,
+                f"购买{item.name}",
+            )
+            if not ok:
+                return False, self._fail_text(reason, item, balance, cur)
+            n = self.db.bag_count(group_id, user_id, "permit", item.item_id)
+            return True, (
+                f"✅ {item.name} 已进背包（×{n}）\n"
+                f"花费 {item.price} {cur} · 余额 {balance}"
             )
 
         if item.kind == "double":

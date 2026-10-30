@@ -1532,3 +1532,124 @@ body.has-savebar .toast {
   color: var(--muted, #888);
   font-size: 12px;
 }
+
+/* ---------------------------------------------------------------- 口令大全 */
+/* 等级徽章。颜色只是辅助，真正的层级靠「Lv.N」这几个字，所以色弱也能读；
+ * 1 级最淡、4 级实心，一眼能看出「这条我能不能用」。 */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 14px 0 6px;
+  padding: 10px 14px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lvl {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.lvl-2 {
+  border-color: #d8c4b2;
+  color: #7a6350;
+}
+
+.lvl-3 {
+  background: var(--accent-soft);
+  border-color: #e2c6cf;
+  color: var(--accent-dark);
+}
+
+.lvl-4 {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.cmd-block {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.cmd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.cmd-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.cmd-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 用法用等宽字体：这些是要照着抄的字符串，不该和说明文字长一个样。 */
+.cmd-usage code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.cmd-desc {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.cmd-where {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cmd-group {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.cmd-off {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+tr.is-off .cmd-usage code {
+  color: var(--faint);
+  text-decoration: line-through;
+}

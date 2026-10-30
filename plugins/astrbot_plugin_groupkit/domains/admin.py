@@ -123,19 +123,40 @@ async def kick(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
         yield env.event.plain_result("⚠️ 机器人没有群管理权限，没法踢人")
         return
 
-    # 「踢 @某人 拉黑」= 踢出去并且不再同意他入群。
-    # 不带后缀就是普通踢人，他随时能再申请进来 —— 这个区别值得一个口令区分开。
+    # 「踢 @某人 拉黑」= 踢出去并且记进黑名单：他以后每次进群都会被自动
+    # 踢掉，不只是「拒绝加群申请」—— 后者挡不住别人拉他、也挡不住换号重进。
     reject = parse_kick_reject(env.args)
     done = await onebot.kick(env.event, env.group_id, target, reject_add_request=reject)
     if not done:
         yield env.event.plain_result("⚠️ 踢人失败，检查机器人权限")
         return
+    if reject:
+        await asyncio.to_thread(
+            ctx.db.blacklist_add, env.group_id, target, env.sender_id
+        )
     await asyncio.to_thread(
         ctx.db.log_op, env.group_id, env.sender_id, "踢人+拉黑" if reject else "踢人", target
     )
     yield env.event.plain_result(
-        "✅ 已踢出并拉黑\n该成员不能再申请入群" if reject else "✅ 已踢出该成员"
+        "✅ 已踢出并拉黑\n以后他再进群会被自动踢" if reject else "✅ 已踢出该成员"
     )
+
+
+async def blacklist_off(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
+    """解除拉黑 @某人。只从黑名单里放出来，人不一定在群里。"""
+    targets = ev.at_targets(env.event, env.sender_id)
+    if not targets:
+        yield env.event.plain_result("格式：解除拉黑 @某人")
+        return
+    target = targets[0]
+    removed = await asyncio.to_thread(ctx.db.blacklist_remove, env.group_id, target)
+    if not removed:
+        yield env.event.plain_result("这位不在黑名单里")
+        return
+    await asyncio.to_thread(
+        ctx.db.log_op, env.group_id, env.sender_id, "解除拉黑", target
+    )
+    yield env.event.plain_result("✅ 已从黑名单移除，以后进群不再自动踢")
 
 
 async def whole_ban(ctx: PluginContext, env: CommandEnv, enable: bool) -> AsyncGenerator:
@@ -186,10 +207,12 @@ async def adjust_quota(ctx: PluginContext, env: CommandEnv, sign: int) -> AsyncG
 
 
 async def grant(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
-    """授权 @某人 等级。按调用者的等级受限：
+    """授权 @某人 等级。**只有 4 级能发**，而且能给到 4 级。
 
-    - 3 级（管理员）：只能设 1~2 级，而且动不了现在已是 3 级以上的人；
-    - 4 级：1~4 任意。
+    为什么不是「等级比别人高就能授权」：授权是唯一一种「能凭空造出
+    另一个自己」的操作。如果 3 级能授 3 级，一次越权就会自我繁殖，
+    最后没人说得清谁是谁发的。所以这条权限锁死在 4 级，并且 4 级可以
+    直接授出 4 级 —— 群主愿意把钥匙给谁，是他的判断。
 
     等级是「取高」模型（见 Permission.level），所以把 QQ 管理员降到 1
     实际降不掉 —— 他的 3 级来自群角色。这条不在群里解释，写进管理台。
@@ -207,27 +230,12 @@ async def grant(ctx: PluginContext, env: CommandEnv) -> AsyncGenerator:
         yield env.event.plain_result("机器人不需要权限，它只听配置的")
         return
 
-    ok, viewer = await ctx.permission.require(
-        env.event, env.group_id, env.sender_id, env.member, 3
+    ok, _viewer = await ctx.permission.require(
+        env.event, env.group_id, env.sender_id, env.member, 4
     )
     if not ok:
-        yield env.event.plain_result("⚠️ 需要「管理」权限")
+        yield env.event.plain_result("⚠️ 授权只给 4 级（群主）")
         return
-    if viewer < 4 and level > 2:
-        yield env.event.plain_result(
-            "⚠️ 管理员只能设 1~2 级\n3~4 级要群主来发"
-        )
-        return
-    if viewer < 4:
-        # 目标的等级要连「手动授权」一起算 —— 只查群角色的话，
-        # 被手动授过 3 级的人在管理员眼里就是普通成员，会被越权改动。
-        target_member = await asyncio.to_thread(ctx.db.get_member, env.group_id, target)
-        current = await ctx.permission.level(env.event, env.group_id, target, target_member)
-        if current >= 3:
-            yield env.event.plain_result(
-                "⚠️ 这位是 3 级以上，管理员动不了\n要调整请找群主"
-            )
-            return
 
     await asyncio.to_thread(ctx.db.ensure_member, env.group_id, target, 0)
     await asyncio.to_thread(ctx.db.set_permission, env.group_id, target, level)
@@ -275,17 +283,17 @@ COMMANDS = [
         key="mute",
         matcher=prefix(("禁言", "口球")),
         handler=mute,
-        level=2,
+        level=3,
         perm_short="禁言",
-        help=(HelpEntry("禁言 @某人 [时长]", "让他一段时间不能说话", page="admin", level=2, order=10),),
+        help=(HelpEntry("禁言 @某人 [时长]", "让他一段时间不能说话，3 级起", page="admin", level=3, order=10),),
     ),
     Command(
         key="unmute",
         matcher=prefix(("解禁", "解除禁言")),
         handler=unmute,
-        level=2,
+        level=3,
         perm_short="解禁",
-        help=(HelpEntry("解禁 @某人", "提前放出来", page="admin", level=2, order=20),),
+        help=(HelpEntry("解禁 @某人", "提前放出来", page="admin", level=3, order=20),),
     ),
     Command(
         key="kick",
@@ -293,7 +301,7 @@ COMMANDS = [
         handler=kick,
         level=3,
         perm_short="踢人",
-        help=(HelpEntry("踢 @某人 [拉黑]", "移出群，加「拉黑」就不能再申请", page="admin", level=3, order=10),),
+        help=(HelpEntry("踢 @某人 [拉黑]", "移出群；加「拉黑」会记进黑名单，一进来就自动踢", page="admin", level=3, order=10),),
     ),
     Command(
         key="whole_ban_on",
@@ -317,7 +325,7 @@ COMMANDS = [
         handler=_adjust_cmd(1),
         level=4,
         perm_short="发额度",
-        help=(HelpEntry("发额度 @某人 50", "无中生有（可以给自己），4 级专用", page="admin", level=4, order=20),),
+        help=(HelpEntry("发额度 @某人 50", "凭空造钱（可以给自己），4 级专用", page="admin", level=4, order=20),),
     ),
     Command(
         key="quota_sub",
@@ -331,8 +339,16 @@ COMMANDS = [
         key="grant",
         matcher=prefix(("授权", "设权限", "设置权限")),
         handler=grant,
-        level=3,
+        level=4,
         perm_short="授权",
-        help=(HelpEntry("授权 @某人 2", "管理员可设 1~2 级；3~4 级要 4 级来发", page="admin", level=3, order=20),),
+        help=(HelpEntry("授权 @某人 2", "只有 4 级能发，能授到任意等级（含 4 级）", page="admin", level=4, order=20),),
+    ),
+    Command(
+        key="blacklist_off",
+        matcher=prefix(("解除拉黑", "取消拉黑", "放出黑名单")),
+        handler=blacklist_off,
+        level=3,
+        perm_short="解除拉黑",
+        help=(HelpEntry("解除拉黑 @某人", "从黑名单里放出来，以后进群不再自动踢", page="admin", level=3, order=11),),
     ),
 ]

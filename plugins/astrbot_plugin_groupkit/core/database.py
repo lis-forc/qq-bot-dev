@@ -16,8 +16,10 @@
 
 from __future__ import annotations
 
+import random
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -30,7 +32,7 @@ except Exception:  # pragma: no cover
 
     logger = logging.getLogger("astrbot_plugin_groupkit")
 
-SCHEMA_VERSION = 5  # 结构版本；改表时 +1（v2 签到，v3 名片皮肤，v4 昵称，v5 背包与关系）
+SCHEMA_VERSION = 8  # 结构版本；改表时 +1（v2 签到，v3 名片皮肤，v4 昵称，v5 背包与关系，v6 红包，v7 黑名单，v8 大富翁/名字后缀）
 
 # 「今天」按北京时间算，不看容器时区。
 #
@@ -59,6 +61,25 @@ def _day_before(date_key: str) -> str:
         return (date.fromisoformat(date_key) - timedelta(days=1)).isoformat()
     except ValueError:
         return ""
+
+
+def split_packet(left_amount: int, left_count: int) -> int:
+    """从剩余金额里分出这一份（二倍均值法）。
+
+    规则只有两条：每人至少 1；最后一个人拿走剩下的全部 —— 否则零头
+    永远发不出去，包里会一直挂着 1 块钱导致「没抢完」。
+
+    上限取「剩余均值 × 2」：比均值大一点才刺激，但不会让第一个抢的人
+    一把梭光，后面的人只能看着。
+    """
+    left_amount = max(0, int(left_amount))
+    left_count = max(1, int(left_count))
+    if left_count <= 1 or left_amount <= 1:
+        return left_amount
+    # 给后面的人每人留 1
+    room = left_amount - (left_count - 1)
+    high = min(room, max(1, int(left_amount / left_count * 2)))
+    return random.randint(1, max(1, high))
 
 
 class Database:
@@ -326,6 +347,49 @@ class Database:
                 PRIMARY KEY (group_id, user_id, kind, item_id)
             )
             """,
+            # ---------------- 红包 ----------------
+            # 一个群同时只允许一个没抢完的包 —— 这条规则用查询保证
+            # （WHERE left_count>0），不靠调用方自觉。
+            # left_amount / left_count 是「还剩多少」，抢一次减一次；
+            # 不设过期时间（用户明确要求永久保留），所以没有 deadline 列。
+            """
+            CREATE TABLE IF NOT EXISTS red_packets (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id    TEXT    NOT NULL,
+                sender_id   TEXT    NOT NULL,
+                total       INTEGER NOT NULL,
+                left_amount INTEGER NOT NULL,
+                count       INTEGER NOT NULL,
+                left_count  INTEGER NOT NULL,
+                created_at  TEXT    NOT NULL
+            )
+            """,
+            # 同一个人对同一个包只能抢一次。主键就是这条约束，
+            # 不用在业务层再查一遍「他抢过没」。
+            """
+            CREATE TABLE IF NOT EXISTS red_packet_claims (
+                group_id   TEXT    NOT NULL,
+                packet_id  INTEGER NOT NULL,
+                user_id    TEXT    NOT NULL,
+                amount     INTEGER NOT NULL,
+                created_at TEXT    NOT NULL,
+                PRIMARY KEY (group_id, packet_id, user_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_red_packets_open "
+            "ON red_packets (group_id, left_count)",
+            # ---------------- 黑名单 ----------------
+            # 「踢 @某人 拉黑」之后，他每次进群都会被自动踢掉。
+            # 和「拒绝加群申请」不是一回事：后者挡不住别人拉他进群。
+            """
+            CREATE TABLE IF NOT EXISTS blacklist (
+                group_id   TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                added_by   TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (group_id, user_id)
+            )
+            """,
             # ---------------- 索引：按真实查询模式建 ----------------
             # 今日/本月统计：WHERE group_id,user_id AND stat_date [...]
             "CREATE INDEX IF NOT EXISTS idx_daily_user_date "
@@ -377,6 +441,12 @@ class Database:
             # v5：关系。结缔成功后双方各写一份，解除时两边一起清。
             "relation": "TEXT NOT NULL DEFAULT ''",
             "relation_with": "TEXT NOT NULL DEFAULT ''",
+            # v8：大富翁冷却（上次玩的 unix 秒）与临时名字后缀。
+            # 后缀单独两列而不是拼进 display_name：后者会在改名、
+            # 信息卡、排行榜里到处漏，清也清不干净。
+            "monopoly_at": "INTEGER NOT NULL DEFAULT 0",
+            "nick_suffix": "TEXT NOT NULL DEFAULT ''",
+            "nick_suffix_until": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, ddl in additions.items():
             if name not in columns:
@@ -940,12 +1010,188 @@ class Database:
         )
         return [dict(row) for row in cur.fetchall()]
 
-    def quota_ranking(self, group_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    # ---------------------------------------------------------------- 黑名单
+    def blacklist_add(self, group_id: str, user_id: str, by: str = "") -> None:
+        """拉黑。重复拉黑不报错（他可能被踢了又进、又踢一次）。"""
+        with self._tx():
+            self.conn.execute(
+                "INSERT OR REPLACE INTO blacklist (group_id, user_id, added_by, created_at) "
+                "VALUES (?,?,?,?)",
+                (str(group_id), str(user_id), str(by), _now()),
+            )
+
+    def blacklist_remove(self, group_id: str, user_id: str) -> bool:
+        """解除拉黑。返回是否真的删掉了一条 —— 不在黑名单里要说清。"""
+        with self._tx():
+            cursor = self.conn.execute(
+                "DELETE FROM blacklist WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            )
+            return cursor.rowcount > 0
+
+    def is_blacklisted(self, group_id: str, user_id: str) -> bool:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM blacklist WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            ).fetchone()
+        return bool(row)
+
+    def blacklist_list(self, group_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT user_id, added_by, created_at FROM blacklist "
+                "WHERE group_id=? ORDER BY created_at DESC",
+                (str(group_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------------------------------------------------------------- 大富翁
+    def monopoly_last(self, group_id: str, user_id: str) -> int:
+        """上次玩大富翁的 unix 秒。0 表示从没玩过。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT monopoly_at FROM members WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def monopoly_mark(self, group_id: str, user_id: str, stamp: int) -> None:
+        with self._tx():
+            self.conn.execute(
+                "UPDATE members SET monopoly_at=? WHERE group_id=? AND user_id=?",
+                (int(stamp), str(group_id), str(user_id)),
+            )
+
+    # ---------------------------------------------------------------- 名字后缀
+    def set_nick_suffix(
+        self, group_id: str, user_id: str, suffix: str, until: int
+    ) -> None:
+        """挂/摘一个临时名字后缀。``until`` 是 unix 秒，0 表示立刻失效。"""
+        with self._tx():
+            self.conn.execute(
+                "UPDATE members SET nick_suffix=?, nick_suffix_until=? "
+                "WHERE group_id=? AND user_id=?",
+                (str(suffix or ""), int(until or 0), str(group_id), str(user_id)),
+            )
+
+    def nick_suffix(self, group_id: str, user_id: str, now: int | None = None) -> tuple[str, int]:
+        """当前还在生效的名字后缀。返回 (后缀, 到期时间)；过期返回 ("", 0)。
+
+        **过期就地清掉**，不留给调用方判断：查后缀的地方不止一处
+        （守卫拼名片、改名、信息卡），漏一处就会出现「明明到期了还挂着」。
+        """
+        moment = int(now if now is not None else time.time())
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT nick_suffix, nick_suffix_until FROM members "
+                "WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            ).fetchone()
+        if not row:
+            return "", 0
+        suffix = str(row[0] or "")
+        until = int(row[1] or 0)
+        if not suffix:
+            return "", 0
+        if until and until <= moment:
+            self.set_nick_suffix(group_id, user_id, "", 0)
+            return "", 0
+        return suffix, until
+
+    # ---------------------------------------------------------------- 红包
+    def red_packet_open(self, group_id: str) -> dict[str, Any] | None:
+        """这个群还没抢完的红包。没有返回 None。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM red_packets WHERE group_id=? AND left_count>0 "
+                "ORDER BY id DESC LIMIT 1",
+                (str(group_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def red_packet_create(
+        self, group_id: str, sender_id: str, amount: int, count: int
+    ) -> tuple[bool, str, int]:
+        """开一个红包。返回 (成功, 失败原因, 包 id)。
+
+        「一个群只能有一个没抢完的包」在这里兜住：两个人同时发，
+        `_tx` 把写操作串行化，后到的那个拿到 ``busy``。
+        """
+        with self._tx():
+            busy = self.conn.execute(
+                "SELECT id FROM red_packets WHERE group_id=? AND left_count>0 LIMIT 1",
+                (str(group_id),),
+            ).fetchone()
+            if busy:
+                return False, "busy", 0
+            cursor = self.conn.execute(
+                "INSERT INTO red_packets "
+                "(group_id, sender_id, total, left_amount, count, left_count, created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (str(group_id), str(sender_id), amount, amount, count, count, _now()),
+            )
+            return True, "", int(cursor.lastrowid)
+
+    def red_packet_grab(self, group_id: str, user_id: str) -> tuple[str, int, dict[str, Any]]:
+        """抢一次。返回 (状态, 抢到多少, 抢完之后的包)。
+
+        状态：``empty`` 没有包 / ``taken`` 你已经抢过 / ``ok`` 抢到了。
+        抢到最后一个也返回 ok —— 调用方看 ``left_count`` 判断是不是刚好抢完。
+        """
+        with self._tx():
+            row = self.conn.execute(
+                "SELECT * FROM red_packets WHERE group_id=? AND left_count>0 "
+                "ORDER BY id DESC LIMIT 1",
+                (str(group_id),),
+            ).fetchone()
+            if not row:
+                return "empty", 0, {}
+            packet = dict(row)
+            pid = int(packet["id"])
+            claimed = self.conn.execute(
+                "SELECT 1 FROM red_packet_claims "
+                "WHERE group_id=? AND packet_id=? AND user_id=?",
+                (str(group_id), pid, str(user_id)),
+            ).fetchone()
+            if claimed:
+                return "taken", 0, packet
+
+            amount = split_packet(int(packet["left_amount"]), int(packet["left_count"]))
+            self.conn.execute(
+                "INSERT INTO red_packet_claims "
+                "(group_id, packet_id, user_id, amount, created_at) VALUES (?,?,?,?,?)",
+                (str(group_id), pid, str(user_id), amount, _now()),
+            )
+            self.conn.execute(
+                "UPDATE red_packets SET left_amount=left_amount-?, left_count=left_count-1 "
+                "WHERE id=?",
+                (amount, pid),
+            )
+            packet["left_amount"] = int(packet["left_amount"]) - amount
+            packet["left_count"] = int(packet["left_count"]) - 1
+            return "ok", amount, packet
+
+    def red_packet_claims(self, group_id: str, packet_id: int) -> list[dict[str, Any]]:
+        """这个包谁抢了多少。给「已抢完」的明细用。"""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT user_id, amount FROM red_packet_claims "
+                "WHERE group_id=? AND packet_id=? ORDER BY rowid",
+                (str(group_id), int(packet_id)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def quota_ranking(
+        self, group_id: str, limit: int = 10, offset: int = 0
+    ) -> list[dict[str, Any]]:
         """群内额度排行。只排余额 > 0 的人。
 
         排序用 `quota DESC, total_messages DESC` 而不是只看余额：
         余额相同的情况在早期很常见（大家都刚领了新人礼），
         这时按发言数排，榜上不会出现一串「并列第一」看起来像坏了。
+
+        ``offset`` 是为了分页（额度榜 2 看第 11~20 名）。
         """
         # 连接是 check_same_thread=False 的，而这两张榜都跑在 asyncio.to_thread
         # 里 —— 也就是真的在别的线程上读同一个连接。必须自己上锁。
@@ -957,10 +1203,69 @@ class Database:
                 "FROM members m "
                 "LEFT JOIN checkins c ON c.group_id = m.group_id AND c.user_id = m.user_id "
                 "WHERE m.group_id = ? AND m.quota > 0 "
-                "ORDER BY m.quota DESC, m.total_messages DESC, m.user_id ASC LIMIT ?",
-                (group_id, max(1, int(limit))),
+                "ORDER BY m.quota DESC, m.total_messages DESC, m.user_id ASC "
+                "LIMIT ? OFFSET ?",
+                (group_id, max(1, int(limit)), max(0, int(offset))),
             )
             return [dict(row) for row in cur.fetchall()]
+
+    def daily_ranking(
+        self,
+        group_id: str,
+        date_key: str,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """**今日**发言排行。
+
+        和 ``message_ranking``（累计）不是一回事：累计榜上永远是那几个老
+        群友，新来的人再怎么聊也挤不上去，那榜就没人看。按天排才有悬念。
+
+        数据来自 ``daily_stats``，所以老成员一句话没说就**不出现**在榜上 ——
+        这正是日榜该有的样子。
+
+        LEFT JOIN 而不是 INNER JOIN：某个人今天说过话，但 members 里还没有
+        他的记录（极端情况：消息入库了、成员行没建成），这时用 user_id 兜底，
+        不能让他凭空消失。
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT d.user_id, d.msg_count AS total_messages, "
+                "       m.quota, m.card_skin, m.display_name, m.qq_name, "
+                "       c.title_id, c.streak_days, c.total_days "
+                "FROM daily_stats d "
+                "LEFT JOIN members m ON m.group_id = d.group_id AND m.user_id = d.user_id "
+                "LEFT JOIN checkins c ON c.group_id = d.group_id AND c.user_id = d.user_id "
+                "WHERE d.group_id = ? AND d.stat_date = ? AND d.msg_count > 0 "
+                "ORDER BY d.msg_count DESC, m.quota DESC, d.user_id ASC "
+                "LIMIT ? OFFSET ?",
+                (
+                    group_id,
+                    str(date_key),
+                    max(1, int(limit)),
+                    max(0, int(offset)),
+                ),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def daily_rank_total(self, group_id: str, date_key: str) -> int:
+        """今天有多少人说过话。用来算「第几页 / 共几页」。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM daily_stats "
+                "WHERE group_id=? AND stat_date=? AND msg_count>0",
+                (group_id, str(date_key)),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def quota_rank_total(self, group_id: str) -> int:
+        """有多少人余额 > 0。额度榜分页用。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM members WHERE group_id=? AND quota>0",
+                (group_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def message_ranking(self, group_id: str, limit: int = 10) -> list[dict[str, Any]]:
         """群内发言排行。只排真正说过话的人。

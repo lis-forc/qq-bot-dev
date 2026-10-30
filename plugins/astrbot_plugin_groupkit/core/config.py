@@ -252,15 +252,6 @@ class PluginConfig:
         return bool(self.raw.get("nick_allow_digits", False))
 
     @property
-    def nick_force(self) -> bool:
-        """新成员没改名时要不要催、催几次之后静音。
-
-        只在 ``nick_enabled`` 开着时有意义 —— 关了昵称系统就没有
-        「什么算合规名字」这个判据，也就无从催起。
-        """
-        return bool(self.raw.get("nick_force", True))
-
-    @property
     def nick_join_text(self) -> str:
         """入群时追加的改名提示。留空用内置文案，填了就用填的那段。"""
         return str(self.raw.get("nick_join_text") or "").strip()
@@ -280,6 +271,95 @@ class PluginConfig:
         """提醒超限后静音多少分钟。默认 1 —— 目的是打断他一下，
         不是惩罚，所以短到「他去改个名就自动恢复了」。"""
         return min(43200, max(1, _as_int(self.raw.get("nick_nag_mute_minutes"), 1)))
+
+    @property
+    def mute_card_price(self) -> int:
+        """禁言卡价格。默认 30。
+
+        卡片只给 10 秒，卖的是「玩一下」不是「管人」，所以定价低于一次
+        签到奖励的两倍 —— 攒两天就能买一张，不至于变成奢侈品。
+        """
+        return max(0, _as_int(self.raw.get("mute_card_price"), 30))
+
+    @property
+    def rename_card_price(self) -> int:
+        """改名卡价格。默认 50。
+
+        改名从免费改成收费是这个群的选择：名字要有分量，改一次就得付点
+        代价。3 级以上（管理、群主）不受这条约束。
+        """
+        return max(0, _as_int(self.raw.get("rename_card_price"), 50))
+
+    @property
+    def monopoly_cost(self) -> int:
+        """大富翁入场费。默认 5。
+
+        六个点数的期望约 +4.17，入场费 5，所以每局期望净 -0.83：留一点
+        轻微缩水，否则群里最勤快的人会一直掷，额度越滚越不值钱。
+        想更刺激就把点数收益调高、或者把入场费设成 0。
+        """
+        return max(0, _as_int(self.raw.get("monopoly_cost"), 5))
+
+    @property
+    def monopoly_cooldown_hours(self) -> int:
+        """大富翁冷却多少小时。默认 3，设 0 = 不冷却。
+
+        冷却不是防刷（防刷靠期望为负），而是让「今天掷出什么」变成一件
+        值得等的事。三小时大致等于「上午一次、下午一次、晚上一次」。
+        """
+        return max(0, min(168, _as_int(self.raw.get("monopoly_cooldown_hours"), 3)))
+
+    @property
+    def monopoly_jackpot(self) -> int:
+        """终极大奖金额。默认 300。"""
+        return max(0, _as_int(self.raw.get("monopoly_jackpot"), 300))
+
+    @property
+    def monopoly_jackpot_chance(self) -> int:
+        """终极大奖概率（百分比）。默认 1，也就是 1%。
+
+        只挂在 6 点后面，所以真实概率是 1/6 × 1% ≈ 0.17% —— 平均
+        五百多局才出一次。概率再高一点，期望就会被这一格拉正。
+        """
+        return max(0, min(100, _as_int(self.raw.get("monopoly_jackpot_chance"), 1)))
+
+    @property
+    def rank_max_page(self) -> int:
+        """排行榜最多翻到第几页（每页 10 人）。默认 5，也就是前 50 名。
+
+        不设更大：第 6 页以后基本没人看了，而且「最多 5 页」这个上限本身
+        也是个提示 —— 让前 50 名之外的人知道该收敛了。
+        """
+        return max(1, min(50, _as_int(self.raw.get("rank_max_page"), 5)))
+
+    @property
+    def rank_member_enabled(self) -> bool:
+        """普通成员能不能看日发言榜。默认能。
+
+        日榜不带钱、不带隐私，让所有人看反而有推动力；但小群里
+        「今天只有三个人说话」会让人有压力，所以留一个能关的开关。
+        关掉之后普通群员发「发言榜」会收到权限提示。
+        """
+        return bool(self.raw.get("rank_member_enabled", True))
+
+    @property
+    def fake_cost(self) -> int:
+        """「假装消息」一次多少额度。默认 3。
+
+        这是唯一一个「能替别人发言」的能力，免费等于把全群身份借出去。
+        3 是个门槛：不贵到没人玩，也不至于有人拿它刷屏骚扰。
+        设 0 就是免费开放（自己承担后果）。
+        """
+        return max(0, _as_int(self.raw.get("fake_cost"), 3))
+
+    @property
+    def red_packet_count(self) -> int:
+        """发红包默认拆成几个。默认 5。
+
+        上限 50 是防手滑（`发红包 100 1000` 等于把一块钱分成一千份）。
+        真正能分多少个还受金额限制：每个包至少 1。
+        """
+        return max(1, min(50, _as_int(self.raw.get("red_packet_count"), 5)))
 
     @property
     def freeman_price(self) -> int:

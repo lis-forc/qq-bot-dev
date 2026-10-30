@@ -36,6 +36,9 @@
         <button class="tab" data-view="assets" type="button">
           素材 <span class="tab-note" id="tabAssetsNote">—</span>
         </button>
+        <button class="tab" data-view="commands" type="button">
+          口令 <span class="tab-note" id="tabCommandsNote">全部等级</span>
+        </button>
         <button class="tab" data-view="data" type="button">
           数据 <span class="tab-note">看报表和流水</span>
         </button>
@@ -132,6 +135,25 @@
         </div>
       </section>
 
+      <!-- ============================================================ 口令 -->
+      <section class="view" id="view-commands" data-view="commands" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">口令大全</span>
+            <span class="panel-note" id="commandsNote">—</span>
+          </div>
+          <p class="lead">
+            这张表直接从代码里的命令注册表长出来，和群里发「帮助」「管理」看到的是<strong>同一份数据</strong>，
+            所以不会出现「群里有、面板上没有」。按<strong>所需等级</strong>分组：
+            1 级是所有群员，2 级助手，3 级管理员，4 级群主。
+          </p>
+          <div class="legend" id="commandsLegend"></div>
+          <div id="commandsBody">
+            <div class="empty">正在读取口令…</div>
+          </div>
+        </div>
+      </section>
+
       <!-- ============================================================ 数据 -->
       <section class="view" id="view-data" data-view="data" hidden>
         <div class="split">
@@ -224,11 +246,11 @@
                   <span class="panel-note">只在这里说明，群里不啰嗦</span>
                 </div>
                 <div class="perm-notes">
-                  <p><strong>1 级 · 成员</strong> — 日常口令全部可用；「给额度」是转账（自己的钱，对方收 80% 进一），人人可用。</p>
-                  <p><strong>2 级 · 助手</strong> — 禁言 / 解禁；可以代改别人的显示名和性别。</p>
-                  <p><strong>3 级 · 管理</strong>（QQ 管理员自动获得）— 踢人、扣额度；「授权」只能设别人 1~2 级，也动不了 3 级以上的人。</p>
-                  <p><strong>4 级 · 群主</strong>（QQ 群主自动获得）— 全部权限：发额度（无中生有，可给自己）、全群禁言、授权 1~4 级。被授权到 4 级的人同权。</p>
-                  <p class="perm-tip">等级取「群角色映射」和「手动授权」中较高的那个，所以手动降级降不动群主 / 管理员的身份。</p>
+                  <p><strong>1 级 · 成员</strong> — 只能看自己的东西；日榜默认可看（可在配置里关）；「给额度」是转账（掏自己的钱，对方收 80% 进一），人人可用；改名要消耗一张改名卡。</p>
+                  <p><strong>2 级 · 助手</strong> — 只做<strong>查看类</strong>操作：看别人的信息卡、背包、额度、签到记录。不能禁言、不能踢人。</p>
+                  <p><strong>3 级 · 管理</strong>（QQ 管理员自动获得）— 禁言 / 解禁（不用卡，可自定时长）、踢人、拉黑（每次进群自动踢）、扣额度、代改名 / 代改性别。</p>
+                  <p><strong>4 级 · 群主</strong>（QQ 群主自动获得）— 在 3 级之上多两样：<strong>发额度</strong>（凭空造钱，可给自己）和<strong>授权</strong>（能授到任意等级，含 4 级）。被授权到 4 级的人同权。</p>
+                  <p class="perm-tip">授权锁在 4 级：等级比别人高不等于能授权，否则一次越权就能自我繁殖。等级取「群角色映射」和「手动授权」中较高的那个，所以手动降级降不动群主 / 管理员的身份。完整口令表见顶部「口令」页。</p>
                 </div>
               </div>
             </div>

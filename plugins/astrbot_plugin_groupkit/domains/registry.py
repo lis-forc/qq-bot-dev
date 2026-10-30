@@ -18,7 +18,21 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from ..core.command import Command, CommandEnv, HelpEntry, exact, require_level
-from . import admin, bag, checkin, help as help_domain, profile, quota, rank, shop, stats, sticker
+from . import (
+    admin,
+    bag,
+    checkin,
+    fake,
+    help as help_domain,
+    monopoly,
+    profile,
+    quota,
+    rank,
+    redpacket,
+    shop,
+    stats,
+    sticker,
+)
 
 
 async def _page_handler(ctx, env: CommandEnv, which: str) -> AsyncGenerator:
@@ -99,11 +113,20 @@ COMMANDS: list[Command] = [
     quota.COMMANDS[1],        # 抽奖
     stats.COMMANDS[0],        # 今日
     quota.COMMANDS[2],        # 额度记录
+    # 「给额度」是**普通群员**之间转账（扣自己的，对方收 80%），
+    # 必须排在「发额度 / 扣额度」之前：那两条是管理命令，靠前缀匹配，
+    # 而这是 `给额度`/`转额度`/`转账` 三个前缀，两者不会撞。
+    # 之前漏了注册 —— 命令写好了、帮助条目也写了，但群里发出去没人接，
+    # 表现就是「这个指令我不知道在哪」。注册表漏一条不会有任何报错。
+    quota.COMMANDS[3],        # 给额度
     *checkin.COMMANDS,        # 签到（含记录 / 排行）
     *bag.COMMANDS,            # 背包 / 头衔 / 关系（「头衔」前缀要在通用口令之前）
     *rank.COMMANDS,           # 额度排行
     *shop.COMMANDS,           # 商店 / 购买（「兑换」整句归商店，带参数归购买）
     *sticker.COMMANDS,        # 表情（列表/搜索/详情 排在「表情」前缀之前）
+    *fake.COMMANDS,           # 假装消息（「假装」前缀，和表情不冲突）
+    *redpacket.COMMANDS,      # 红包（「发红包」必须在「红包」前缀之前，列表里已排好）
+    *monopoly.COMMANDS,       # 大富翁（两条都是 exact，顺序不影响匹配）
     *admin.COMMANDS,          # 群管（内部已按「全群在前」的顺序排好）
 ]
 
